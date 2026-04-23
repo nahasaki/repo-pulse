@@ -1,0 +1,21 @@
+{
+  "name": "repo-pulse",
+  "version": "0.2.0",
+  "description": "Summarize git activity in the current repository since you were last active.",
+  "author": { "name": "Myroslav Tantsyura" },
+  "userConfig": {
+    "extra_emails": {
+      "type": "string",
+      "multiple": true,
+      "title": "Additional email addresses",
+      "description": "Optional. Your git config user.email is used automatically for the current repo. Add any OTHER addresses you've committed with here (old work email, personal gmail, etc.) so 'My activity' and 'Merged by others' classify them correctly.",
+      "default": []
+    },
+    "default_since": {
+      "type": "string",
+      "title": "Fallback time window",
+      "description": "Used only when the smart default can't find your last commit in this repo. Any value git log --since accepts (e.g., '7 days ago', '2 weeks ago', '2026-04-01').",
+      "default": "7 days ago"
+    }
+  }
+}

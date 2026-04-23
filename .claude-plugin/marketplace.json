@@ -1,0 +1,11 @@
+{
+  "name": "repo-pulse",
+  "owner": { "name": "Myroslav Tantsyura" },
+  "plugins": [
+    {
+      "name": "repo-pulse",
+      "source": ".",
+      "description": "Summarize git activity in the current repository since you were last active."
+    }
+  ]
+}

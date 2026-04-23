@@ -1,0 +1,57 @@
+schema: spec-driven
+
+# Project context shown to AI when creating artifacts.
+context: |
+  Project: repo-pulse — a Claude Code plugin (one git repo = one plugin,
+  distributed as a marketplace-of-one). Target version: 0.1.0.
+
+  Purpose: summarize what changed in the current git repository since the
+  user was last active — colleagues' merged commits, new/updated remote
+  branches, GitLab MRs, the user's own recent commits, MRs awaiting review,
+  CI status on the default branch.
+
+  Tech stack:
+    - Bash scripts under skills/<skill>/scripts/ (chmod +x, set -euo pipefail)
+    - git + glab + jq on the host (jq required only when origin is GitLab)
+    - Claude Code skill (SKILL.md) that invokes the script and adds a TL;DR
+    - No runtime state; no writes to the plugin directory (read-only at runtime)
+
+  Invariants:
+    - Repository is PUBLIC — committed files must not contain personal data.
+      Real user emails live in gitignored skills/whats-new/config.local.sh;
+      the committed skills/whats-new/config.sh is an empty template.
+    - Scripts reference themselves via ${CLAUDE_PLUGIN_ROOT}; never hard-code
+      absolute paths.
+    - The plugin is read-only against the repo except for `git fetch`.
+    - GitLab-first: on non-GitLab origins, glab-dependent sections are
+      skipped with a warning, git-only sections still run.
+    - All time comparisons use committer date (not author date).
+
+  Sources of truth:
+    - SPEC.md — design and behavior. Extend it before implementing anything
+      outside the current scope.
+    - CLAUDE.md — conventions for agent sessions.
+    - README.md — short human-facing intro.
+
+  Conventions:
+    - Conventional Commits (feat:, fix:, docs:, refactor:, chore:).
+    - User reviews every commit — never run `git commit` without explicit
+      instruction.
+    - Each logical step is its own commit; history must be reviewable.
+
+# Per-artifact rules.
+rules:
+  proposal:
+    - "Write in English. This repo's rule is English-only for every checked-in artifact (code, comments, docs, specs, commit messages, change notes). Conversation with the user may happen in Ukrainian, but anything saved to disk stays in English."
+    - "Cross-reference SPEC.md sections by name instead of duplicating content."
+    - "If a change touches behavior not covered by SPEC.md, state explicitly that SPEC.md must be updated as part of the change."
+    - "Always include a Non-goals section so scope stays bounded."
+  tasks:
+    - "Write in English."
+    - "One task per logical commit — sized so the user can review the diff in a single pass (rule of thumb: under ~2 hours of focused work)."
+    - "For bash-script tasks, include the chmod +x step explicitly; the executable bit is part of the deliverable."
+    - "Never include tasks that write personal data (emails, tokens, paths) into committed files."
+  specs:
+    - "Write in English."
+    - "Keep specs focused on observable behavior (inputs, outputs, error handling), not implementation details that belong in the script."
+    - "When a spec change affects the output format or section order, call that out prominently — downstream Claude TL;DR logic depends on it."

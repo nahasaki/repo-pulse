@@ -1,0 +1,10 @@
+.DS_Store
+*.log
+.vscode/
+.idea/
+
+# Local config overrides (per-machine secrets or paths)
+**/config.local.sh
+
+# OpenSpec tooling installs command/skill shims here; regenerated on demand.
+.claude/
