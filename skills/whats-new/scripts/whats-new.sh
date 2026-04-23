@@ -70,42 +70,123 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 REPO_SLUG="$(basename "${REPO_ROOT}")"
 
 ORIGIN_URL="$(git remote get-url origin 2>/dev/null || true)"
-IS_GITLAB=false
-case "${ORIGIN_URL}" in
-  *gitlab*) IS_GITLAB=true ;;
+
+# extract_hostname: pull the domain out of a git remote URL.
+# Handles ssh (git@host:path), https (https://host/path), git (git://host/path).
+extract_hostname() {
+  local url="$1"
+  [[ -z "${url}" ]] && return 0
+  # Strip optional user@ prefix and scheme.
+  local stripped="${url#*://}"
+  stripped="${stripped#*@}"
+  # Domain ends at first '/' or ':'.
+  stripped="${stripped%%/*}"
+  stripped="${stripped%%:*}"
+  printf '%s' "${stripped}"
+}
+
+FORGE_HOSTNAME="$(extract_hostname "${ORIGIN_URL}")"
+FORGE="unknown"
+
+# auth_hostname_matches <cli> <hostname>
+# Both gh and glab `auth status --hostname <h>` exit 0 regardless of auth state,
+# so we grep stdout+stderr for "Logged in to <host>". Empty/unknown host never matches.
+auth_hostname_matches() {
+  local cli="$1" host="$2"
+  [[ -z "${host}" ]] && return 1
+  command -v "${cli}" >/dev/null 2>&1 || return 1
+  "${cli}" auth status --hostname "${host}" 2>&1 \
+    | grep -Fq "Logged in to ${host}"
+}
+
+# Fast-path: domain match on the two public forges.
+case "${FORGE_HOSTNAME}" in
+  github.com)  FORGE="github" ;;
+  gitlab.com)  FORGE="gitlab" ;;
 esac
+
+# Probe fallback: GHE / self-hosted GitLab.
+if [[ "${FORGE}" == "unknown" && -n "${FORGE_HOSTNAME}" ]]; then
+  if auth_hostname_matches gh "${FORGE_HOSTNAME}"; then
+    FORGE="github"
+  elif auth_hostname_matches glab "${FORGE_HOSTNAME}"; then
+    FORGE="gitlab"
+  fi
+fi
 
 HAS_JQ=false
 command -v jq >/dev/null 2>&1 && HAS_JQ=true
 
-if ${IS_GITLAB} && ! ${HAS_JQ}; then
-  cat >&2 <<'EOF'
-whats-new: jq is required for GitLab repositories (used to parse `glab` JSON output).
+# Fatal: jq required if forge is known AND the forge's CLI is installed
+# (we would use glab/gh + jq). On unknown forge, missing jq is non-fatal.
+if [[ "${FORGE}" != "unknown" ]] && ! ${HAS_JQ}; then
+  forge_cli="glab"; [[ "${FORGE}" == "github" ]] && forge_cli="gh"
+  if command -v "${forge_cli}" >/dev/null 2>&1; then
+    cat >&2 <<EOF
+whats-new: jq is required to parse ${forge_cli} JSON output.
   macOS:   brew install jq
   Debian:  sudo apt install jq
   Fedora:  sudo dnf install jq
 EOF
-  exit 1
+    exit 1
+  fi
 fi
 
+# Install-hint helper for missing / unauthed CLIs.
+emit_missing_cli_hint() {
+  local forge="$1" host="$2" reason="$3"
+  local cli="glab" install_url="https://gitlab.com/gitlab-org/cli"
+  if [[ "${forge}" == "github" ]]; then
+    cli="gh"; install_url="https://cli.github.com/"
+  fi
+  local login_cmd="${cli} auth login"
+  # Host-specific login only for non-default hostnames (GHE / self-hosted GitLab).
+  if [[ -n "${host}" && "${host}" != "github.com" && "${host}" != "gitlab.com" ]]; then
+    login_cmd="${cli} auth login --hostname ${host}"
+  fi
+  local forge_label="GitLab"; [[ "${forge}" == "github" ]] && forge_label="GitHub"
+  note "origin is on ${forge_label} but ${reason}. §3/§5/§6 will be empty."
+  note "Install:"
+  note "  macOS:    brew install ${cli}"
+  note "  Debian:   sudo apt install ${cli}"
+  note "  Fedora:   sudo dnf install ${cli}"
+  note "  other:    ${install_url}"
+  note "Then run:  ${login_cmd}"
+}
+
+# Per-forge CLI presence + auth.
 HAS_GLAB=false
-if ${IS_GITLAB}; then
-  if command -v glab >/dev/null 2>&1 && glab auth status >/dev/null 2>&1; then
-    HAS_GLAB=true
-  else
-    note "glab is not available or not authenticated; running git-only sections"
-  fi
-else
-  if [[ -n "${ORIGIN_URL}" ]]; then
-    note "origin is not a GitLab remote (${ORIGIN_URL}); running git-only sections (1, 2, 4)"
-  else
-    note "no 'origin' remote configured; running git-only sections (1, 2, 4)"
-  fi
-fi
+HAS_GH=false
+case "${FORGE}" in
+  gitlab)
+    if ! command -v glab >/dev/null 2>&1; then
+      emit_missing_cli_hint gitlab "${FORGE_HOSTNAME}" "\`glab\` is not installed"
+    elif ! auth_hostname_matches glab "${FORGE_HOSTNAME}"; then
+      emit_missing_cli_hint gitlab "${FORGE_HOSTNAME}" "\`glab\` is not authenticated for ${FORGE_HOSTNAME}"
+    else
+      HAS_GLAB=true
+    fi
+    ;;
+  github)
+    if ! command -v gh >/dev/null 2>&1; then
+      emit_missing_cli_hint github "${FORGE_HOSTNAME}" "\`gh\` is not installed"
+    elif ! auth_hostname_matches gh "${FORGE_HOSTNAME}"; then
+      emit_missing_cli_hint github "${FORGE_HOSTNAME}" "\`gh\` is not authenticated for ${FORGE_HOSTNAME}"
+    else
+      HAS_GH=true
+    fi
+    ;;
+  unknown)
+    # Silent — we don't know which CLI to suggest. git-only sections only.
+    :
+    ;;
+esac
 
-if ! ${HAS_JQ} && ${HAS_GLAB}; then
-  note "jq not found; skipping glab-dependent sections even though glab is available"
-  HAS_GLAB=false
+# jq missing + forge CLI present = downgrade (shouldn't reach here because
+# fatal path above would have exited, but defensive).
+if ! ${HAS_JQ}; then
+  ${HAS_GLAB} && { note "jq not found; skipping glab-dependent sections"; HAS_GLAB=false; }
+  ${HAS_GH}   && { note "jq not found; skipping gh-dependent sections";   HAS_GH=false; }
 fi
 
 # ---------------------------------------------------------------------------
@@ -339,11 +420,13 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# GitLab user identity (for section 3 partitioning)
+# Forge user identity (for section 3 "Open — mine" partitioning)
 # ---------------------------------------------------------------------------
 ME_USERNAME=""
 if ${HAS_GLAB}; then
   ME_USERNAME="$(glab api /user 2>/dev/null | jq -r '.username // empty' 2>/dev/null || true)"
+elif ${HAS_GH}; then
+  ME_USERNAME="$(gh api user --jq .login 2>/dev/null || true)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -401,7 +484,7 @@ collect_section2() {
 
 # Section 3 outputs three sub-files: s3a (others), s3b (merged), s3c (mine).
 # The caller is responsible for creating ${S3A_FILE}, ${S3B_FILE}, ${S3C_FILE}.
-collect_section3() {
+collect_section3_gitlab() {
   ${HAS_GLAB} || return 0
   # glab mr list has no --updated-after flag; it does support --created-after
   # which is too strict (misses old MRs touched recently). So we fetch all
@@ -437,6 +520,68 @@ collect_section3() {
           )"
       ' > "${S3C_FILE}"
   fi
+}
+
+# GitHub Section 3. Same three sub-files, same shape, "#<num>" prefix.
+collect_section3_github() {
+  ${HAS_GH} || return 0
+  local prs_json
+  prs_json="$(gh pr list --state=all \
+                 --json number,title,author,headRefName,baseRefName,state,createdAt,updatedAt,mergedAt,statusCheckRollup \
+                 --limit 100 2>/dev/null || printf '[]')"
+  local me="${ME_USERNAME}"
+  local start_iso="${WINDOW_START_ISO}"
+
+  # statusCheckRollup is an array of checks; summarize to success/failure/pending/—.
+  # Map to a single glyph-ish word for the "checks:" column.
+  #   any FAILURE → failure
+  #   else any PENDING/QUEUED/IN_PROGRESS → pending
+  #   all SUCCESS (and non-empty) → success
+  #   empty → —
+
+  # Open — others
+  printf '%s' "${prs_json}" | jq -r --arg me "${me}" '
+      def rollup: (.statusCheckRollup // []) as $r
+        | if ($r | length) == 0 then "—"
+          elif any($r[]; (.conclusion // .status) == "FAILURE") then "failure"
+          elif any($r[]; (.status // "") == "IN_PROGRESS" or (.status // "") == "QUEUED" or (.conclusion // "") == "PENDING") then "pending"
+          elif all($r[]; (.conclusion // .status) == "SUCCESS") then "success"
+          else "mixed" end;
+      [ .[] | select(.state == "OPEN") | select(.author.login != $me) ] | sort_by(.updatedAt) | reverse
+      | .[]
+      | "- #\(.number) **\(.title)** — \(.author.login), \(.headRefName) → \(.baseRefName), checks: \(rollup)"
+    ' > "${S3A_FILE}"
+
+  # Merged this period
+  printf '%s' "${prs_json}" | jq -r --arg start "${start_iso}" '
+      [ .[] | select(.state == "MERGED") | select((.mergedAt // "") >= $start) ] | sort_by(.mergedAt) | reverse
+      | .[]
+      | "- #\(.number) **\(.title)** — \(.author.login), \(.headRefName) → \(.baseRefName), merged \(.mergedAt[:10])"
+    ' > "${S3B_FILE}"
+
+  # Open — mine
+  if [[ -n "${me}" ]]; then
+    printf '%s' "${prs_json}" | jq -r --arg me "${me}" '
+        def rollup: (.statusCheckRollup // []) as $r
+          | if ($r | length) == 0 then "—"
+            elif any($r[]; (.conclusion // .status) == "FAILURE") then "failure"
+            elif any($r[]; (.status // "") == "IN_PROGRESS" or (.status // "") == "QUEUED" or (.conclusion // "") == "PENDING") then "pending"
+            elif all($r[]; (.conclusion // .status) == "SUCCESS") then "success"
+            else "mixed" end;
+        [ .[] | select(.state == "OPEN") | select(.author.login == $me) ] | sort_by(.updatedAt) | reverse
+        | .[]
+        | "- #\(.number) **\(.title)** — \(.headRefName) → \(.baseRefName), checks: \(rollup)"
+      ' > "${S3C_FILE}"
+  fi
+}
+
+# Dispatcher.
+collect_section3() {
+  case "${FORGE}" in
+    gitlab) collect_section3_gitlab ;;
+    github) collect_section3_github ;;
+    *) return 0 ;;
+  esac
 }
 
 collect_section4() {
@@ -492,7 +637,7 @@ collect_section4() {
       }'
 }
 
-collect_section5() {
+collect_section5_gitlab() {
   ${HAS_GLAB} || return 0
   local mrs_json now_unix
   mrs_json="$(glab mr list --reviewer=@me -F json --per-page 100 2>/dev/null || printf '[]')"
@@ -506,7 +651,31 @@ collect_section5() {
     '
 }
 
-collect_section6() {
+collect_section5_github() {
+  ${HAS_GH} || return 0
+  local prs_json now_unix
+  prs_json="$(gh search prs --review-requested=@me --state=open \
+                 --json number,title,author,createdAt,repository \
+                 --limit 100 2>/dev/null || printf '[]')"
+  now_unix="${NOW_UNIX}"
+  printf '%s' "${prs_json}" | jq -r --argjson now "${now_unix}" '
+      sort_by(.createdAt) | reverse
+      | .[]
+      | ((.createdAt | fromdateiso8601) as $c
+         | ($now - $c) / 86400 | floor) as $age
+      | "- #\(.number) **\(.title)** — \(.author.login), age: \($age) days [\(.repository.nameWithOwner)]"
+    '
+}
+
+collect_section5() {
+  case "${FORGE}" in
+    gitlab) collect_section5_gitlab ;;
+    github) collect_section5_github ;;
+    *) return 0 ;;
+  esac
+}
+
+collect_section6_gitlab() {
   ${HAS_GLAB} || return 0
   ${HAS_DEFAULT_REF} || return 0
   local json
@@ -519,6 +688,30 @@ collect_section6() {
         then "- #\(.id) \(.status // "unknown") — \((.created_at // "")[:16] | sub("T";" ")) (\(.web_url // "—"))"
         else empty end
     '
+}
+
+collect_section6_github() {
+  ${HAS_GH} || return 0
+  ${HAS_DEFAULT_REF} || return 0
+  local json
+  json="$(gh run list --branch "${DEFAULT_BRANCH}" --limit 1 \
+             --json databaseId,displayTitle,status,conclusion,workflowName,createdAt,url \
+             2>/dev/null || printf '[]')"
+  printf '%s' "${json}" | jq -r '
+      if (type == "array" and length > 0) then (.[0]) else empty end
+      | if type == "object" and (.databaseId // null) != null
+        then (if (.status == "completed") then (.conclusion // "unknown") else (.status // "unknown") end) as $s
+          | "- \(.workflowName) #\(.databaseId) \($s) — \((.createdAt // "")[:16] | sub("T";" ")) (\(.url // "—"))"
+        else empty end
+    '
+}
+
+collect_section6() {
+  case "${FORGE}" in
+    gitlab) collect_section6_gitlab ;;
+    github) collect_section6_github ;;
+    *) return 0 ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------

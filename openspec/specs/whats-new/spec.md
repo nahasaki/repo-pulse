@@ -86,16 +86,27 @@ All time comparisons throughout the system SHALL use committer date, never autho
 
 The system SHALL produce plain markdown to stdout in this fixed section order, omitting any section that is empty:
 
-1. **Merged to default** — commits reachable from `origin/<default>` within the window, authored by someone other than the user, excluding merge commits.
-2. **New / updated remote branches** — non-default remote branches whose last commit is within the window, excluding branches whose every in-window commit is by the user. Shows name, last committer name, last commit time, and commits-ahead count relative to the default branch.
-3. **Merge requests** — three subsections: "Open — others" (authored by someone else, still open), "Merged this period" (any author, merged in window), "Open — mine" (authored by the user, still open). Each entry: `!<iid> <title> — <author>, <source> → <target>, CI: <status>`.
-4. **My activity** — commits across all refs within the window authored by any address in `EFFECTIVE_EMAILS`, grouped by branch then by date.
-5. **MRs awaiting my review** — output of `glab mr list --reviewer=@me`; no time filter. Each entry: `!<iid> <title> — <author>, age: <N days>`.
-6. **CI on default** — last pipeline on `origin/<default>`: id, status, creation time, and web URL, on one line.
+1. **Merged to default** — unchanged.
+2. **New / updated remote branches** — unchanged.
+3. **Merge requests / Pull requests** — forge-aware:
+   - On GitLab: three subsections (Open — others, Merged this period, Open — mine) using `glab`. Each entry: `!<iid> <title> — <author>, <source> → <target>, CI: <status>`.
+   - On GitHub: same three subsections using `gh`. Each entry: `#<number> <title> — <author>, <source> → <target>, checks: <status>`.
+   - On unknown forge: omitted entirely.
+4. **My activity** — unchanged (identity-driven, forge-agnostic).
+5. **MRs/PRs awaiting my review** — forge-aware:
+   - On GitLab: `glab mr list --reviewer=@me`. Entries: `!<iid> <title> — <author>, age: <N days>`.
+   - On GitHub: `gh search prs --review-requested=@me --state=open --json …`. Entries: `#<number> <title> — <author>, age: <N days>`.
+   - On unknown forge: omitted.
+6. **CI on default** — forge-aware:
+   - On GitLab: `- #<pipeline-id> <status> — YYYY-MM-DD HH:MM (<url>)`.
+   - On GitHub: `- <workflow-name> #<run-id> <status> — YYYY-MM-DD HH:MM (<url>)`.
+   - On unknown forge: omitted.
+
+Section prefix characters (`!` vs `#`) SHALL match the forge's native convention. Normalization across forges is forbidden.
 
 If every section is empty, the system SHALL print a single-line summary `Nothing new since <ISO start>` and nothing else.
 
-**Downstream Claude TL;DR logic depends on this output shape.** Any future change to the section order or format MUST explicitly call that out in the change's proposal.
+**Downstream Claude TL;DR logic depends on this output shape.** Any future change to the section order or the set of section headers MUST explicitly call that out in its proposal.
 
 #### Scenario: All sections empty
 
@@ -107,6 +118,30 @@ If every section is empty, the system SHALL print a single-line summary `Nothing
 - **WHEN** sections 1 and 4 have data but sections 2, 3, 5, and 6 are empty
 - **THEN** the output includes the "Merged to default" and "My activity" sections, in that order
 - **AND** no empty section headers appear
+
+#### Scenario: GitHub repo with PRs
+
+- **WHEN** `FORGE = github` and the repo has 2 open PRs by others, 3 merged in window, 1 open by the user
+- **THEN** section 3 renders three subsections, each with `#<number>` prefixed entries
+- **AND** the "checks" column reflects the PR's combined check status
+
+#### Scenario: Cross-forge visual consistency
+
+- **WHEN** the same report structure is produced on a GitLab repo and a GitHub repo (same non-zero counts per section)
+- **THEN** the section headers and order are identical
+- **BUT** GitLab entries use `!` prefix and GitHub entries use `#` prefix
+- **AND** section 6 on GitHub includes the workflow name in the line; on GitLab it does not
+
+#### Scenario: Adaptive §6 label
+
+- **WHEN** `FORGE = github` and the latest run on the default branch is named "Build and Test" with id 987 and status "success"
+- **THEN** section 6 emits: `- Build and Test #987 success — <datetime> (<url>)`
+
+#### Scenario: GitLab §6 unchanged
+
+- **WHEN** `FORGE = gitlab` and the latest pipeline id is 2457640709 status "success"
+- **THEN** section 6 emits: `- #2457640709 success — <datetime> (<url>)`
+- **AND** the format is byte-for-byte identical to v0.2.0
 
 ### Requirement: Default-branch auto-detection
 
@@ -184,25 +219,59 @@ The system SHALL NOT mutate the repository in any way except for running `git fe
 
 ### Requirement: Preflight and graceful degradation
 
-The system SHALL handle preflight failures as specified:
+The system SHALL handle preflight failures and missing dependencies as follows:
 
 | Condition | Behavior |
 |---|---|
 | Not in a git work tree | One-line message to stderr, exit 1 |
-| Origin is not a GitLab remote | Print `> note:` warning; run git-only sections (1, 2, 4) |
-| `glab auth status` fails | Same as non-GitLab: warn, run git-only sections |
 | `git fetch` fails (offline) | Print `> note:` warning; continue against stale refs |
-| `jq` missing, origin is GitLab | Exit 1 with an install hint |
-| `jq` missing, origin is not GitLab | Warn; skip glab-dependent sections |
+| `FORGE=github` and `gh` not installed | Print install hint (see below); run git-only sections (1, 2, 4) |
+| `FORGE=github` and `gh` installed but not authed for the hostname | Print hint suggesting `gh auth login --hostname <host>`; run git-only sections |
+| `FORGE=gitlab` and `glab` not installed | Print install hint (see below); run git-only sections |
+| `FORGE=gitlab` and `glab` installed but not authed | Print hint suggesting `glab auth login`; run git-only sections |
+| `FORGE=unknown` | Run git-only sections silently — no forge-related hint |
+| `jq` missing and `FORGE ∈ {github, gitlab}` with the respective CLI present | Exit 1 with a jq install hint |
+| `jq` missing and `FORGE=unknown` | Warn, skip CLI-dependent sections (same behavior as missing CLI) |
+
+Install hints SHALL be multi-line `> note:` blocks with platform-specific commands. Example for GitHub:
+
+```
+> note: origin is on GitHub but `gh` is not installed. §3/§5/§6 will be empty.
+> Install:
+>   macOS:    brew install gh
+>   Debian:   sudo apt install gh
+>   Fedora:   sudo dnf install gh
+>   other:    https://cli.github.com/
+> Then run:  gh auth login
+```
 
 All non-fatal warnings SHALL be emitted as lines prefixed with `> note:` at the top of the output so Claude surfaces them to the user without treating them as data.
 
-#### Scenario: Non-GitLab origin
+#### Scenario: GitHub repo, gh missing
 
-- **WHEN** the origin remote points to a non-GitLab host (e.g., `github.com:foo/bar`)
-- **THEN** the output starts with a `> note:` warning identifying the non-GitLab origin
-- **AND** only sections 1 ("Merged to default"), 2 ("Remote branches"), and 4 ("My activity") are produced
+- **WHEN** `FORGE = github` and `gh` is not on PATH
+- **THEN** a multi-line `> note:` install hint appears at the top of the output, naming `brew install gh` (macOS), `sudo apt install gh` (Debian), `sudo dnf install gh` (Fedora), and a final `gh auth login` instruction
+- **AND** only sections 1, 2, and 4 are produced
 - **AND** the exit status is 0
+
+#### Scenario: GitLab repo, glab missing
+
+- **WHEN** `FORGE = gitlab` and `glab` is not on PATH
+- **THEN** an analogous `> note:` hint appears naming `brew install glab`, the Debian package URL, `sudo dnf install glab`, and `glab auth login`
+- **AND** only sections 1, 2, and 4 are produced
+- **AND** the exit status is 0
+
+#### Scenario: Unknown forge, silent
+
+- **WHEN** `FORGE = unknown`
+- **THEN** the output contains NO install hint naming `gh`, `glab`, or any forge CLI
+- **AND** only sections 1, 2, and 4 are produced
+
+#### Scenario: GHE with gh present but unauthed for hostname
+
+- **WHEN** `FORGE = github` via URL match AND `gh auth status --hostname <host>` exits non-zero
+- **THEN** the `> note:` hint specifically suggests `gh auth login --hostname <host>` with the detected hostname
+- **AND** only sections 1, 2, and 4 are produced
 
 #### Scenario: Offline run
 
@@ -221,3 +290,45 @@ All non-fatal warnings SHALL be emitted as lines prefixed with `> note:` at the 
 - **WHEN** `jq` is not on PATH and the origin is GitLab
 - **THEN** the script exits with status 1
 - **AND** prints an install hint directing the user to install `jq`
+
+### Requirement: Forge detection
+
+The system SHALL detect the hosting forge of the current repository's `origin` remote and set an internal `FORGE` value to one of `github`, `gitlab`, or `unknown`. Detection precedence:
+
+1. **URL match (fast path).** If the origin URL contains the literal substring `github.com`, set `FORGE=github`. If it contains `gitlab.com`, set `FORGE=gitlab`.
+2. **Local CLI probe (self-hosted fallback).** Extract the domain from the origin URL (handling `git@host:owner/repo.git`, `https://host/owner/repo`, and `git://host/...`). Try `gh auth status --hostname <domain>` — if the output contains `Logged in to <domain>`, set `FORGE=github`. Otherwise try `glab auth status --hostname <domain>` with the same grep-based check — if it matches, set `FORGE=gitlab`. (Both CLIs exit 0 regardless of auth state, so the exit code is not a reliable signal.)
+3. **Default.** If all of the above fail, set `FORGE=unknown`.
+
+Probes MUST NOT make network calls — they are local config checks only.
+
+#### Scenario: GitHub by URL
+
+- **WHEN** origin URL is `https://github.com/owner/repo.git`
+- **THEN** `FORGE = github`
+- **AND** no CLI probe runs
+
+#### Scenario: GitLab by URL
+
+- **WHEN** origin URL is `git@gitlab.com:group/project.git`
+- **THEN** `FORGE = gitlab`
+- **AND** no CLI probe runs
+
+#### Scenario: GitHub Enterprise via probe
+
+- **WHEN** origin URL is `git@github.acme.corp:team/app.git`
+- **AND** `gh auth status --hostname github.acme.corp` output contains `Logged in to github.acme.corp`
+- **THEN** `FORGE = github`
+
+#### Scenario: Self-hosted GitLab via probe
+
+- **WHEN** origin URL is `https://gitlab.internal/group/project.git`
+- **AND** `gh auth status --hostname gitlab.internal` does not report the host as authed
+- **AND** `glab auth status --hostname gitlab.internal` output contains `Logged in to gitlab.internal`
+- **THEN** `FORGE = gitlab`
+
+#### Scenario: Unknown forge
+
+- **WHEN** origin URL is `https://codeberg.org/user/repo.git`
+- **AND** neither `gh` nor `glab` report the domain as authed
+- **THEN** `FORGE = unknown`
+- **AND** the script produces git-only sections (1, 2, 4) with NO install hint in the output

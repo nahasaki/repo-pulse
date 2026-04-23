@@ -2,11 +2,17 @@
 
 Claude Code plugin that summarizes what changed in the current git repository
 since you were last active — colleagues' commits on the default branch, new
-or updated remote branches, merge requests, your own recent commits, MRs
-waiting for your review, and CI status on the default branch.
+or updated remote branches, open/merged pull/merge requests, your own recent
+commits, PRs/MRs waiting for your review, and CI status on the default
+branch.
 
-Status: **design** (v0.1.0 not yet implemented). See [`SPEC.md`](./SPEC.md)
-for the source of truth.
+Works out of the box on GitHub and GitLab — `gh` is used for GitHub
+origins, `glab` for GitLab origins. GitHub Enterprise and self-hosted GitLab
+are detected via the CLIs' `auth status --hostname <h>` probe. On unknown
+forges (Gitea, Codeberg, etc.) only the git-based sections run.
+
+Current version: **0.3.0**. See [`SPEC.md`](./SPEC.md) for the source of
+truth.
 
 ## Install (dev workflow)
 

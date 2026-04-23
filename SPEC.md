@@ -20,9 +20,17 @@ Merge-request review load is informational, not the primary driver.
 - **Current repository only.** The plugin does not know about other repos.
   Cross-repo dashboards are explicitly out of scope; a sibling plugin can add
   that later if needed.
-- **GitLab-first.** Remote-side data is fetched via `glab`. If the repository
-  is not on GitLab, the `glab`-dependent sections are skipped with a warning;
-  the git-only sections still run.
+- **GitHub and GitLab supported.** Remote-side data is fetched via `gh` on
+  GitHub origins, `glab` on GitLab origins. The forge is auto-detected from
+  the origin URL (fast path) with a local `auth status --hostname <h>` probe
+  fallback for GitHub Enterprise and self-hosted GitLab. Unknown forges
+  (Gitea, Codeberg, etc.) fall through silently to git-only sections.
+- **Read-only.** The plugin never mutates the repository, only `git fetch`
+  is executed as a side effect.
+
+See §Error Handling for the behavior when the forge CLI is missing or
+unauthenticated (short answer: the script emits a multi-line install hint
+and runs the git-only sections).
 - **Read-only.** The plugin never mutates the repository, only `git fetch`
   is executed as a side effect.
 
@@ -141,17 +149,27 @@ The script does not do WIP-similarity detection itself; that is Claude's
 job in the TL;DR step (see Data Flow). This keeps the script deterministic
 and free of heuristics.
 
-### 3. Merge requests
+### 3. Merge requests / Pull requests
 
-Uses `glab mr list` with `--updated-after` when supported, otherwise the
-full JSON via `glab mr list -F json` filtered by `updated_at` in the
-script. Split into three subsections:
+Forge-aware; output structure is identical across forges, only the number
+prefix changes.
+
+- GitLab: `glab mr list -A -F json --per-page 100`, filtered in jq by
+  `updated_at` / `merged_at`. Number prefix `!<iid>`, trailing column
+  `CI: <pipeline-status>`.
+- GitHub: `gh pr list --state=all --json number,title,author,headRefName,
+  baseRefName,state,createdAt,updatedAt,mergedAt,statusCheckRollup
+  --limit 100`, filtered in jq. Number prefix `#<number>`, trailing column
+  `checks: <rollup>` where rollup is summarized to `success | failure |
+  pending | mixed | —` based on the status-check states.
+
+Three subsections:
 
 - **Open — others.** Authored by someone else, still open.
 - **Merged this period.** Any author, merged within window.
 - **Open — mine.** Authored by the user, still open.
 
-Each entry: `!<iid> <title> — <author>, <source> → <target>, CI: <status>`.
+Each entry: `<prefix> <title> — <author>, <source> → <target>, <ci-column>`.
 
 ### 4. My activity
 
@@ -162,15 +180,24 @@ message.
 Query: `git log --all --since=<T> --extended-regexp --author=<regex>` with
 regex built as an OR-join of the effective email list.
 
-### 5. Merge requests awaiting my review
+### 5. MRs / PRs awaiting my review
 
-`glab mr list --reviewer=@me` (no time filter — if it's outstanding, show
-it). Entries: `!<iid> <title> — <author>, age: <N days>`.
+No time filter — if it's outstanding, show it.
+
+- GitLab: `glab mr list --reviewer=@me -F json`. Entries:
+  `!<iid> <title> — <author>, age: <N days>`.
+- GitHub: `gh search prs --review-requested=@me --state=open --json …`
+  (cross-repo search — mirrors GitLab's across-projects semantics). Entries:
+  `#<number> <title> — <author>, age: <N days> [<owner>/<repo>]`.
 
 ### 6. Default branch CI status
 
-Last pipeline on `origin/<default>` — id, status, created_at, web URL. One
-line.
+Latest CI run on `origin/<default>`. Adaptive label:
+
+- GitLab: `- #<pipeline-id> <status> — YYYY-MM-DD HH:MM (<web-url>)`.
+- GitHub: `- <workflow-name> #<run-id> <status-or-conclusion> — YYYY-MM-DD
+  HH:MM (<url>)` — `conclusion` used when `status=="completed"`, else the
+  raw status (e.g., `in_progress`).
 
 ## Output Format
 
@@ -233,11 +260,14 @@ SKILL.md tells Claude:
         ▼
 whats-new.sh:
   a. read CLAUDE_PLUGIN_OPTION_* env vars (or dev-mode fallback)
-  b. preflight: in a git repo? gitlab origin? glab authed?
-  c. git fetch --all --prune --quiet  (warn on failure, continue)
-  d. resolve window start (from --since OR smart default)
-  e. collect sections 1–6 in parallel where safe
-  f. emit markdown to stdout
+  b. detect forge: URL-match github.com/gitlab.com, else probe
+     `gh/glab auth status --hostname <h>` (local only, parses stdout)
+  c. preflight: in a git repo? forge CLI available + authed?
+     missing CLI → multi-line `> note:` install hint
+  d. git fetch --all --prune --quiet  (warn on failure, continue)
+  e. resolve window start (from --since OR smart default)
+  f. collect sections 1–6 in parallel, dispatching §3/§5/§6 on $FORGE
+  g. emit markdown to stdout
 ```
 
 ## Error Handling
@@ -245,12 +275,15 @@ whats-new.sh:
 | Condition | Behavior |
 |---|---|
 | Not in a git work tree | Print a one-line error to stderr, exit 1 |
-| Origin is not GitLab | Print a warning header; run sections 1, 2, 4 only |
-| `glab auth status` fails | Same as above — git-only sections |
-| `git fetch` fails (offline) | Print warning, continue against stale refs |
-| Window start cannot be resolved and `DEFAULT_SINCE` is invalid | Print warning, fall back to `7 days ago` literal |
-| `jq` not installed, origin is GitLab | Exit 1 with install hint — `jq` is required to parse `glab` JSON |
-| `jq` not installed, origin is not GitLab | Warn, skip glab-dependent sections (same path as non-gitlab origin) |
+| `git fetch` fails (offline) | Print `> note:` warning, continue against stale refs |
+| `FORGE = github`, `gh` missing | Multi-line install hint (brew/apt/dnf + `gh auth login`), git-only sections |
+| `FORGE = github`, `gh` installed but unauthed for hostname | Hint pointing at `gh auth login --hostname <h>`, git-only sections |
+| `FORGE = gitlab`, `glab` missing | Multi-line install hint (brew/apt/dnf + `glab auth login`), git-only sections |
+| `FORGE = gitlab`, `glab` installed but unauthed for hostname | Hint pointing at `glab auth login --hostname <h>`, git-only sections |
+| `FORGE = unknown` | Silent — git-only sections, no forge-specific hint |
+| Window start cannot be resolved and `DEFAULT_SINCE` is invalid | `> note:` warning, fall back to `7 days ago` literal |
+| `jq` missing, `FORGE ∈ {github, gitlab}` with CLI present | Exit 1 with install hint (stderr) |
+| `jq` missing, `FORGE = unknown` | `> note:` warning, skip forge-dependent sections |
 
 All warnings render as the first line(s) of the output prefixed with
 `> note:` so Claude surfaces them to the user without interpreting them as
@@ -306,11 +339,15 @@ comes entirely from the script.
 Manual acceptance, no CI. Run against three repositories covering the
 relevant cases:
 
-1. **`promin/funnels-builder`** — gitlab, author is the user, multiple
-   collaborators. Expected: all six sections populated.
-2. A **GitHub repo** — non-gitlab origin. Expected: warning header, then
-   git-only sections.
-3. **Empty window** — run immediately after a run with no new activity.
+1. **`promin/funnels-builder`** — GitLab, author is the user, multiple
+   collaborators. Expected: all six sections populated, `!` prefix.
+2. **An active GitHub repo** (e.g., a shallow clone of `cli/cli`). Expected:
+   all six sections populated, `#` prefix, §6 shows workflow name.
+3. **An unknown-forge repo** (e.g., `origin` pointing at Codeberg or a made-
+   up host). Expected: git-only sections, no install hint.
+4. **A GitHub repo with `gh` unavailable** (temporarily remove it from
+   PATH). Expected: multi-line install hint + git-only sections.
+5. **Empty window** — run immediately after a run with no new activity.
    Expected: single-line "Nothing new since `<T>`".
 
 Each acceptance pass is logged informally in a PR description or commit
