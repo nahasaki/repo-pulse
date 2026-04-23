@@ -446,6 +446,39 @@ collect_section1() {
       }'
 }
 
+# Emit one CSV row per §1 commit: sha,author_name,added,deleted,files
+# Uses the same filter as collect_section1 so the metadata set matches §1 exactly.
+# Commits with an empty diff (rare; --no-merges already excludes merges) are
+# skipped by design — themes analysis has nothing to say about them.
+collect_section1_metadata() {
+  ${HAS_DEFAULT_REF} || return 0
+  git log "${DEFAULT_REF}" --since="${SINCE}" --no-merges --shortstat \
+        --format='THEMES_REC%x09%h%x09%ae%x09%an' 2>/dev/null \
+  | awk -v regex="${MY_EMAIL_REGEX}" '
+      BEGIN { FS="\t"; sha="" }
+      /^THEMES_REC\t/ {
+        if (regex != "" && $3 ~ regex) { sha=""; next }
+        sha=$2; author=$4
+        gsub(",", "", author)
+        added=0; deleted=0; files=0
+        next
+      }
+      sha != "" && /files? changed/ {
+        n = split($0, parts, ",")
+        for (i = 1; i <= n; i++) {
+          if (parts[i] ~ /files? changed/) {
+            match(parts[i], /[0-9]+/); files = substr(parts[i], RSTART, RLENGTH)
+          } else if (parts[i] ~ /insertions?/) {
+            match(parts[i], /[0-9]+/); added = substr(parts[i], RSTART, RLENGTH)
+          } else if (parts[i] ~ /deletions?/) {
+            match(parts[i], /[0-9]+/); deleted = substr(parts[i], RSTART, RLENGTH)
+          }
+        }
+        printf("%s,%s,%d,%d,%d\n", sha, author, added, deleted, files)
+        sha=""
+      }'
+}
+
 collect_section2() {
   local window_unix="${WINDOW_START_UNIX}"
   [[ "${window_unix}" == "0" ]] && return 0
@@ -845,4 +878,17 @@ if [[ "${N6}" -gt 0 ]]; then
   printf '## CI on `%s`\n' "${DEFAULT_BRANCH}"
   cat "${S6_FILE}"
   printf '\n'
+fi
+
+# Machine-readable metadata consumed by SKILL.md step 2 to build the
+# "## Themes this period" section. Wrapped in an HTML comment so it's
+# invisible in rendered markdown. Emitted only when §1 has commits.
+if [[ "${N1}" -gt 0 ]]; then
+  THEMES_METADATA="$(collect_section1_metadata 2>/dev/null)"
+  if [[ -n "${THEMES_METADATA}" ]]; then
+    printf '<!-- themes-metadata\n'
+    printf 'sha,author_name,added,deleted,files\n'
+    printf '%s\n' "${THEMES_METADATA}"
+    printf -- '-->\n'
+  fi
 fi

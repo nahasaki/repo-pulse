@@ -8,6 +8,10 @@ green — in one read-only command.
 
 ## Features
 
+- **Themes this period** — on active repos, a short "what was actually
+  done" section above the commit list, clustered by author and area.
+  Threshold-based: cheap on quiet repos, bounded on busy ones via
+  parallel subagents
 - **Auto-detects your forge** — GitHub (via `gh`) or GitLab (via `glab`),
   including GitHub Enterprise and self-hosted GitLab
 - **Smart time window** — defaults to your last commit in the current repo;
@@ -29,7 +33,22 @@ green — in one read-only command.
 
 That's it. Open any git repo in Claude Code and ask *"what's new?"*.
 
-Updates: `/plugin update repo-pulse@repo-pulse`.
+## Update
+
+Pull the latest release from the marketplace and reload:
+
+```
+/plugin update repo-pulse@repo-pulse
+/reload-plugins
+```
+
+`/reload-plugins` applies changes to `plugin.json`, `SKILL.md`, and
+the script inside the current Claude Code session — no restart
+required. If you want a clean slate, quit and reopen Claude Code
+instead.
+
+To see the currently installed version, run `/plugin list` and look
+for `repo-pulse`.
 
 ## Usage
 
@@ -67,6 +86,8 @@ they persist in `~/.claude/settings.json` across `/plugin update`.
 |---|---|---|
 | `extra_emails` | Additional commit email addresses (if you've used old work or personal addresses) | `[]` |
 | `default_since` | Fallback window when your last commit can't be found | `7 days ago` |
+| `summary_mode` | Themes section mode: `auto` (threshold-based), `off` (skip themes), `always` (force parallel subagents) | `auto` |
+| `summary_max_commits` | Hard safety cap — skip themes when more than this many commits remain after filtering | `50` |
 
 Re-run the plugin's config flow in Claude Code to change values later.
 
