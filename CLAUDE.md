@@ -124,6 +124,12 @@ Things that cost implementation time — don't re-learn:
 - **`grep -c` exits 1 on zero matches** while still printing `0`. If you
   shell-substitute its output and `|| printf 0` as fallback you'll emit
   "00". Swallow the exit instead.
+- **userConfig values are always strings.** Claude Code exposes every
+  `userConfig` key as a `CLAUDE_PLUGIN_OPTION_<KEY>` env var, which is
+  inherently a string even when the config "type" is conceptually
+  integer/boolean. Declare integer-valued knobs as `"type": "string"`
+  with a numeric-looking default (e.g., `"50"`) and parse to int in the
+  consumer. See `summary_max_commits` in `.claude-plugin/plugin.json`.
 
 ## Install And Iterate
 

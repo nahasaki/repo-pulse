@@ -1,6 +1,6 @@
 {
   "name": "repo-pulse",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Summarize git activity in the current repository since you were last active.",
   "author": { "name": "Myroslav Tantsyura" },
   "userConfig": {
@@ -16,6 +16,18 @@
       "title": "Fallback time window",
       "description": "Used only when the smart default can't find your last commit in this repo. Any value git log --since accepts (e.g., '7 days ago', '2 weeks ago', '2026-04-01').",
       "default": "7 days ago"
+    },
+    "summary_mode": {
+      "type": "string",
+      "title": "Work summary mode",
+      "description": "Controls the 'Themes this period' section above Merged-to-default. auto (default): threshold-based — enables themes when there are eligible commits, picks serial vs parallel subagents by volume. off: skip themes entirely (output matches pre-0.4.0). always: force parallel subagents even on quiet repos (keeps the main session's context clean but costs more tokens).",
+      "default": "auto"
+    },
+    "summary_max_commits": {
+      "type": "string",
+      "title": "Themes safety cap (commit count)",
+      "description": "Hard cap for the themes section. When more than this many commits remain after filtering bots/lock-files/docs-only/trivial bumps, themes are skipped with a note and you are advised to narrow the window. Default 50. Accepts a plain integer string.",
+      "default": "50"
     }
   }
 }

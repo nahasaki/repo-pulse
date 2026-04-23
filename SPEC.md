@@ -72,12 +72,14 @@ stores them in `~/.claude/settings.json` under
 `CLAUDE_PLUGIN_OPTION_<KEY>` environment variables. Values survive `/plugin
 update` because `settings.json` is outside the plugin cache.
 
-The plugin declares exactly two fields:
+The plugin declares four fields:
 
 | Field | Type | Default | Purpose |
 |---|---|---|---|
 | `extra_emails` | `string`, `multiple: true` | `[]` | Additional author emails beyond `git config user.email`. For old/personal addresses you've also committed with. |
 | `default_since` | `string` | `"7 days ago"` | Fallback window when the smart default can't resolve a last-commit anchor. |
+| `summary_mode` | `string` (enum `auto` / `off` / `always`) | `"auto"` | Controls the `## Themes this period` section. `auto` uses the threshold engine. `off` skips themes entirely (pre-0.4.0 output). `always` forces the parallel-subagent path even on quiet repos. |
+| `summary_max_commits` | `string` (integer-valued) | `"50"` | Hard safety cap. When the post-filter eligible-commit count exceeds this, themes are skipped with a `> note:` advising to narrow the window. |
 
 The effective email list is constructed at runtime as:
 
@@ -212,6 +214,10 @@ Window: <ISO start> → <ISO end> (<reason>)
 #   "--since=<value>"                        — explicit flag from the user
 #   "DEFAULT_SINCE fallback (<value>)"       — no user commits found
 
+## Themes this period            # inserted by SKILL.md step 2, not the script
+- **<theme title>** (<N> commits, <author1> + <author2>): <one sentence>
+- ... (3–6 bullets max)
+
 ## Merged to `<default>` (N)
 - YYYY-MM-DD `sha` **message** — Author Name
 - ...
@@ -241,7 +247,69 @@ Window: <ISO start> → <ISO end> (<reason>)
 - #<pipeline-id> <status> — YYYY-MM-DD HH:MM (<url>)
 ```
 
-Section order is fixed. The plugin does not produce JSON in v0.1.0.
+Section order is fixed. The plugin does not produce JSON.
+
+After the last script-emitted section, the script appends a
+machine-readable `<!-- themes-metadata -->` HTML comment (invisible in
+rendered markdown) with one CSV row per §1 commit:
+`sha,author_name,added,deleted,files`. SKILL.md step 2 parses this
+block to build the `## Themes this period` section. The block is
+emitted only when §1 has commits and is stripped from the user-visible
+output. The skill MAY fall back to running `git log --shortstat`
+itself if the block is missing (older script version).
+
+### Themes section
+
+Above §1 the skill MAY insert a `## Themes this period` section when
+the threshold engine decides themes should be produced. Bullet
+format:
+
+```
+- **<theme title>** (<N> commits, <author1> + <author2> + others): <one sentence>
+```
+
+Rules:
+
+- 3–6 bullets max. Clusters beyond 6 are silently dropped (their
+  commits still appear in §1).
+- Exactly one sentence per bullet; no sub-bullets; no emoji.
+- Author list truncates to `author1 + author2 + others` when three
+  or more distinct authors share a cluster.
+
+### Themes filtering
+
+Before themes analysis, commits are filtered out (they stay in §1's
+commit list; only excluded from cluster input):
+
+- Bot authors — author name ends with `[bot]`.
+- Lock/vendor-only changes — every file matches `*.lock` / `go.sum` /
+  `package-lock.json` / `yarn.lock` / `Cargo.lock` / `vendor/**` /
+  `node_modules/**`.
+- Trivial dep bumps — subject matches `^chore(\(deps\))?: bump `
+  AND shortstat additions ≤ 5.
+- Pure merge commits — ≥ 2 parents AND empty cross-parent diff.
+- Docs-only changes — every file matches `*.md` / `docs/**` /
+  `README*` / `LICENSE*`.
+
+Filter evaluation is conservative: if any file in a commit sits
+outside every exclusion pattern, the commit is NOT filtered.
+
+### Threshold dispatcher
+
+| Mode | Condition | Behavior |
+|------|-----------|----------|
+| `skip` | `N == 0`, OR `N > summary_max_commits`, OR `summary_mode == "off"` | No themes section. Emit `> note:` when skipped due to cap. |
+| `serial` | `summary_mode == "auto"` AND `N ≤ 10` AND `DIFF_KB ≤ 50` | Skill reads diffs in the host session. |
+| `parallel` | `summary_mode == "always"`, OR `auto` when `serial` doesn't qualify | Spawn subagents via `Task` tool, ≤ 8 concurrent, one per cluster. |
+
+`N` = eligible commits after filtering. `DIFF_KB` ≈ Σ(added lines) ÷
+20. Constants (`10`, `50`, `8`) live as named thresholds near the top
+of SKILL.md and are the starting defaults — retune only via a new
+OpenSpec change.
+
+If ≥ 25% of parallel subagents fail, the skill prepends a
+`> note: themes partially degraded: <k> of <n> clusters failed to
+summarize` line above the themes section.
 
 ## Data Flow
 
@@ -251,11 +319,13 @@ Section order is fixed. The plugin does not produce JSON in v0.1.0.
         ▼
 SKILL.md tells Claude:
   1. Run bash: ${CLAUDE_PLUGIN_ROOT}/skills/whats-new/scripts/whats-new.sh [--since=X]
-  2. Read the markdown output
-  3. Add a 1–3 bullet TL;DR above it highlighting whatever matters most
-     (e.g. branches with names similar to the user's current WIP, stale
-     open MRs, failing CI on default)
-  4. Answer follow-ups conversationally
+  2. Parse the <!-- themes-metadata --> block and build the
+     ## Themes this period section via the filter → cluster →
+     threshold → summarize pipeline (serial reads or parallel Task
+     subagents). Also compose the 1–3 bullet TL;DR. Emit the composed
+     markdown (TL;DR, themes, script output) with the metadata block
+     stripped.
+  3. Answer follow-ups conversationally
         │
         ▼
 whats-new.sh:
@@ -267,7 +337,8 @@ whats-new.sh:
   d. git fetch --all --prune --quiet  (warn on failure, continue)
   e. resolve window start (from --since OR smart default)
   f. collect sections 1–6 in parallel, dispatching §3/§5/§6 on $FORGE
-  g. emit markdown to stdout
+  g. emit markdown to stdout, appending <!-- themes-metadata --> when §1
+     has commits
 ```
 
 ## Error Handling
