@@ -1,69 +1,91 @@
 # repo-pulse
 
-Claude Code plugin that summarizes what changed in the current git repository
-since you were last active — colleagues' commits on the default branch, new
-or updated remote branches, open/merged pull/merge requests, your own recent
-commits, PRs/MRs waiting for your review, and CI status on the default
-branch.
+> A Claude Code plugin that catches you up on a git repository since you were last active.
 
-Works out of the box on GitHub and GitLab — `gh` is used for GitHub
-origins, `glab` for GitLab origins. GitHub Enterprise and self-hosted GitLab
-are detected via the CLIs' `auth status --hostname <h>` probe. On unknown
-forges (Gitea, Codeberg, etc.) only the git-based sections run.
+Ask *"what's new?"* in any repo and get a focused brief: what your teammates
+merged, which branches moved, which PRs are waiting on you, and whether CI is
+green — in one read-only command.
 
-Current version: **0.3.0**. See [`SPEC.md`](./SPEC.md) for the source of
-truth.
+## Features
 
-## Install (dev workflow)
+- **Auto-detects your forge** — GitHub (via `gh`) or GitLab (via `glab`),
+  including GitHub Enterprise and self-hosted GitLab
+- **Smart time window** — defaults to your last commit in the current repo;
+  falls back to a configurable period otherwise
+- **Surfaces what matters** — merged commits, new/updated branches, open PRs,
+  PRs awaiting your review, your own recent work, CI status
+- **Zero-config for most users** — `git config user.email` identifies you
+  automatically
+- **Graceful degradation** — on unknown forges (Gitea, Codeberg, …) only the
+  git-based sections run, with install hints for recognized hosts
+- **Read-only** — fetches refs, nothing else
 
-Launch Claude Code with this plugin loaded directly from disk:
-
-```bash
-claude --plugin-dir ~/Projects/claude-plugins/repo-pulse
-```
-
-Inside the session, after edits to plugin files:
+## Install
 
 ```
-/reload-plugins
+/plugin marketplace add nahasaki/repo-pulse
+/plugin install repo-pulse@repo-pulse
 ```
 
-Once the plugin is stable, a `.claude-plugin/marketplace.json` can be added
-at the repo root to make this repo its own single-plugin marketplace,
-installable via `/plugin install repo-pulse@repo-pulse`.
+That's it. Open any git repo in Claude Code and ask *"what's new?"*.
 
-## Invocation
+Updates: `/plugin update repo-pulse@repo-pulse`.
+
+## Usage
+
+Slash command:
 
 ```
 /repo-pulse:whats-new [--since=<period>]
 ```
 
-Also auto-invokes on prompts like "what's new in this repo", "catch me up",
-"what did the team do".
+`<period>` accepts anything `git log --since` does: `2 weeks ago`,
+`yesterday`, `2026-04-01`, …
+
+Natural language (auto-invokes the skill):
+
+- *"what's new in this repo"*
+- *"catch me up"*
+- *"what did the team do this week"*
+
+## Requirements
+
+- **git** — always required
+- **[gh](https://cli.github.com/)** — only if your origin is on GitHub. The
+  plugin prints an install hint if it's missing.
+- **[glab](https://gitlab.com/gitlab-org/cli)** — only if your origin is on
+  GitLab.
+
+On unknown forges the plugin silently falls back to git-only output.
 
 ## Configuration
 
-Zero-config on fresh install: `git config user.email` in the current repo
-is used automatically as your identity.
+Both values are optional. On first install Claude Code prompts for them, and
+they persist in `~/.claude/settings.json` across `/plugin update`.
 
-On first `/plugin install`, Claude Code prompts for two optional values:
+| Key | Purpose | Default |
+|---|---|---|
+| `extra_emails` | Additional commit email addresses (if you've used old work or personal addresses) | `[]` |
+| `default_since` | Fallback window when your last commit can't be found | `7 days ago` |
 
-- **Additional email addresses** — only needed if you've committed with
-  other addresses (old work email, personal gmail). Skip if `git config
-  user.email` already covers you.
-- **Fallback time window** — used when the plugin can't find your last
-  commit in this repo. Default: `7 days ago`.
+Re-run the plugin's config flow in Claude Code to change values later.
 
-Values are persisted in `~/.claude/settings.json` and survive `/plugin
-update`. To change them later, re-run the plugin's config flow in Claude
-Code (or edit `~/.claude/settings.json` under `pluginConfigs."repo-pulse"`
-directly).
+## How it works
 
-For `claude --plugin-dir` dev workflows, see `SPEC.md` §Configuration for
-the optional `config.local.sh` fallback.
+1. Detects the forge from `origin` URL; falls back to probing `gh`/`glab auth status`
+   for GitHub Enterprise and self-hosted GitLab
+2. Resolves the time window from your most recent commit, or from `default_since`
+3. Runs `git fetch` and a handful of `git log`/`gh`/`glab` queries in parallel
+4. Emits one markdown report; the skill prepends a short TL;DR highlighting
+   stale reviews, failing CI, or branches that collide with your WIP
+
+## Links
+
+- [SPEC.md](./SPEC.md) — design and behavior, source of truth
+- [CLAUDE.md](./CLAUDE.md) — orientation for contributors and agent sessions
+- [Issues](https://github.com/nahasaki/repo-pulse/issues)
 
 ## Conventions
 
-- English for all code, comments, commit messages, and documentation
-- Conventional Commits: `feat:`, `fix:`, `docs:`, `refactor:`, `chore:`
-- Orientation for agent sessions: [`CLAUDE.md`](./CLAUDE.md)
+English for all code, comments, commit messages, and documentation.
+Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `chore:`).
