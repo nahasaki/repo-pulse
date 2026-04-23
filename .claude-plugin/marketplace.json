@@ -1,10 +1,13 @@
 {
   "name": "repo-pulse",
   "owner": { "name": "Myroslav Tantsyura" },
+  "metadata": {
+    "description": "Single-plugin marketplace for repo-pulse — summarize git activity in the current repository since you were last active."
+  },
   "plugins": [
     {
       "name": "repo-pulse",
-      "source": ".",
+      "source": "./",
       "description": "Summarize git activity in the current repository since you were last active."
     }
   ]
