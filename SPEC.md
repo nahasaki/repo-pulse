@@ -72,7 +72,7 @@ stores them in `~/.claude/settings.json` under
 `CLAUDE_PLUGIN_OPTION_<KEY>` environment variables. Values survive `/plugin
 update` because `settings.json` is outside the plugin cache.
 
-The plugin declares four fields:
+The plugin declares five fields:
 
 | Field | Type | Default | Purpose |
 |---|---|---|---|
@@ -80,6 +80,7 @@ The plugin declares four fields:
 | `default_since` | `string` | `"7 days ago"` | Fallback window when the smart default can't resolve a last-commit anchor. |
 | `summary_mode` | `string` (enum `auto` / `off` / `always`) | `"auto"` | Controls the `## Themes this period` section. `auto` uses the threshold engine. `off` skips themes entirely (pre-0.4.0 output). `always` forces the parallel-subagent path even on quiet repos. |
 | `summary_max_commits` | `string` (integer-valued) | `"50"` | Hard safety cap. When the post-filter eligible-commit count exceeds this, themes are skipped with a `> note:` advising to narrow the window. |
+| `summary_model` | `string` (enum `haiku` / `sonnet` / `opus` / `inherit`) | `"haiku"` | Model for `Task` subagents in parallel-mode theme summarization. **Parallel-only**: serial-mode summarization always uses the host Claude Code session's model — this value does not affect it. On an unrecognized value, falls back to `inherit` and emits a `> note:`. |
 
 The effective email list is constructed at runtime as:
 
@@ -310,6 +311,21 @@ OpenSpec change.
 If ≥ 25% of parallel subagents fail, the skill prepends a
 `> note: themes partially degraded: <k> of <n> clusters failed to
 summarize` line above the themes section.
+
+### Themes model selection (parallel mode only)
+
+The `summary_model` userConfig value (default `haiku`) determines the
+model for parallel-mode subagents. The skill passes the value to the
+`Task` tool's `model` parameter; when the value is `inherit`, the
+parameter is omitted so subagents follow the host Claude Code
+session. Unknown values fall back to `inherit` with a `> note:`.
+
+This knob does **not** affect serial mode. Serial-mode
+summarization runs inline in the host session and uses whatever
+model the user picked for that session. Users who want the
+cheap-by-default Haiku pass on every invocation can combine
+`summary_model: haiku` with `summary_mode: always` — the latter
+forces the parallel code path regardless of commit volume.
 
 ## Data Flow
 
