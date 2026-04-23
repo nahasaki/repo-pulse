@@ -9,15 +9,20 @@ written in English.
 
 A Claude Code **plugin** named `repo-pulse`, distributed as a standalone git
 repository. The repo root is also the plugin root — one repo, one plugin.
-There is no umbrella marketplace structure.
+Current version lives in `.claude-plugin/plugin.json`. Published at
+`Nahasaki/repo-pulse` on GitHub.
 
-The plugin's purpose and design are defined in [`SPEC.md`](./SPEC.md).
-Treat `SPEC.md` as the source of truth: if a question has an answer there,
-follow it; if not, extend the spec before implementing.
+Sources of truth, in order:
+
+- [`SPEC.md`](./SPEC.md) — design and behavior. If a question has an answer
+  there, follow it; if not, extend the spec before implementing.
+- `openspec/specs/whats-new/spec.md` — current capability spec (requirements
+  + scenarios). Tightly coupled to script behavior.
+- `openspec/changes/archive/` — chronological history of completed changes
+  (proposal + design + tasks per change). Preferred over maintaining a
+  running log in this file.
 
 ## Repository Layout
-
-Intended structure once v0.1.0 is implemented:
 
 ```
 repo-pulse/                          (git repo root = plugin root)
@@ -43,18 +48,10 @@ them to the script as `CLAUDE_PLUGIN_OPTION_<KEY>` env vars. See SPEC.md
 
 ### Plugin manifest
 
-`.claude-plugin/plugin.json` at the repo root. Minimum fields:
-
-```json
-{
-  "name": "repo-pulse",
-  "version": "0.1.0",
-  "description": "Summarize git activity in the current repository.",
-  "author": { "name": "Myroslav Tantsyura" }
-}
-```
-
-`name` must stay `repo-pulse`. Bump `version` with semver on releases.
+Live at `.claude-plugin/plugin.json`. `name` must stay `repo-pulse`. Bump
+`version` with semver on releases (minor bump for breaking changes while
+we're pre-1.0). `userConfig` shape is documented in `SPEC.md`
+§Configuration — don't inline it here, it rots.
 
 ### Skill file references
 
@@ -93,6 +90,7 @@ v0.1.0 does not need persistent state.
 - The user reviews every commit — **never `git commit` without an explicit
   instruction**
 - Do not commit `.env`, credentials, or `config.local.sh`
+- Commit each logical step separately so the history is reviewable
 
 ### Language and documentation style
 
@@ -102,6 +100,30 @@ v0.1.0 does not need persistent state.
 - `SPEC.md` is the design doc; `README.md` is a short intro for humans; this
   file is for agents
 - Keep docs focused — no filler, no redundant restatement across files
+
+## Gotchas
+
+Things that cost implementation time — don't re-learn:
+
+- **macOS default bash is 3.2.** `#!/usr/bin/env bash` picks up Homebrew's
+  bash 4+ when present. Avoid bash 4+ features like `${var^}`, `${var,,}`,
+  `declare -n`, or `++` inside awk subscripts in BSD awk.
+- **`gh auth status` and `glab auth status` always exit 0** regardless of
+  auth state. Parse stdout for `Logged in to <host>`, don't trust the exit
+  code. See `auth_hostname_matches` in `whats-new.sh`.
+- **Git's approxidate misparses `--since=7d`** as "the 7th day of the
+  month", not "7 days ago". The script resolves SINCE to `@<unix>` epoch
+  form before passing to `git log` to avoid this.
+- **`git log --author` uses BRE by default** — `|` is literal. Use
+  `--extended-regexp` for OR-join of emails.
+- **`gh run list` has no `htmlUrl` field** — it's `url`. Always verify
+  field names with `gh <cmd> --json help` before relying on them.
+- **`git for-each-ref refname:short`** returns `origin` (not `origin/HEAD`)
+  for the origin/HEAD symbolic ref on some git versions. Filter by full
+  refname, not short.
+- **`grep -c` exits 1 on zero matches** while still printing `0`. If you
+  shell-substitute its output and `|| printf 0` as fallback you'll emit
+  "00". Swallow the exit instead.
 
 ## Install And Iterate
 
@@ -143,30 +165,35 @@ Then:
 
 Updates: edit files, `git commit`, then `/plugin update repo-pulse@repo-pulse`.
 
-## Implementation Status
+## Working on changes
 
-v0.1.0 (archived change `implement-whats-new`) delivered the working skill
-end-to-end. v0.2.0 (change `adopt-user-config`) migrated user config from
-shipped shell files to Claude Code's `userConfig` mechanism — see SPEC.md
-§Configuration for the current model. See `openspec/changes/archive/` for
-history and `openspec/specs/whats-new/spec.md` for the current
-specification.
+Use OpenSpec. Propose via `/opsx:propose <kebab-name>`, implement via
+`/opsx:apply <name>`, archive via `/opsx:archive <name>`. Do NOT extend
+this file with ad-hoc plans — CLAUDE.md is orientation, the change
+directory (`openspec/changes/<name>/`) is work-in-progress.
 
-When starting new work, propose a change via `/opsx:propose` rather than
-extending this file with ad-hoc plans. CLAUDE.md describes orientation; the
-change directory carries the work-in-progress.
+Read `openspec/changes/archive/` for completed change history.
 
-## Historical notes
+## Acceptance targets
 
-Acceptance for v0.1.0 and v0.2.0 used these targets — keep them in mind
-when regression-testing future changes:
+Concrete paths that have proven useful for acceptance runs:
 
-- Run against `promin/funnels-builder`, a GitHub repo, and an empty-window
-  case (see SPEC.md §Testing).
-- For v0.2.0, also verify first-run `userConfig` prompt, survival of
-  `/plugin update`, and the dev-mode `config.local.sh` fallback.
+| Path | Forge | What it exercises |
+|---|---|---|
+| `~/Projects/promin/funnels-builder` | GitLab | Full 6-section report; identity resolution with multiple emails |
+| `~/Projects/inflecto` | GitHub | GitHub §1/§2/§4; low activity (useful for "nothing new" edge) |
+| `/tmp/cli-test` (shallow clone of `cli/cli`) | GitHub | Active §3/§5/§6: PRs, search, workflow runs |
+| `/tmp/wn-unknown` (fake Codeberg origin) | unknown | Verifies silent git-only path |
 
-Commit each logical step separately so the history is reviewable.
+Shallow clone for `cli-test`:
+
+```bash
+git clone --depth 30 https://github.com/cli/cli.git /tmp/cli-test
+```
+
+For `userConfig` + `/plugin update` survival, a real marketplace install
+(`/plugin install repo-pulse@repo-pulse`) in a fresh Claude Code session
+is required — cannot be simulated from `--plugin-dir` sessions.
 
 ## Out Of Scope
 
