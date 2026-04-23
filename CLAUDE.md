@@ -10,7 +10,7 @@ written in English.
 A Claude Code **plugin** named `repo-pulse`, distributed as a standalone git
 repository. The repo root is also the plugin root — one repo, one plugin.
 Current version lives in `.claude-plugin/plugin.json`. Published at
-`Nahasaki/repo-pulse` on GitHub.
+`nahasaki/repo-pulse` on GitHub.
 
 Sources of truth, in order:
 
