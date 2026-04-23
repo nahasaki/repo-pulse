@@ -1,6 +1,6 @@
 {
   "name": "repo-pulse",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Summarize git activity in the current repository since you were last active.",
   "author": { "name": "Myroslav Tantsyura" },
   "userConfig": {
@@ -28,6 +28,12 @@
       "title": "Themes safety cap (commit count)",
       "description": "Hard cap for the themes section. When more than this many commits remain after filtering bots/lock-files/docs-only/trivial bumps, themes are skipped with a note and you are advised to narrow the window. Default 50. Accepts a plain integer string.",
       "default": "50"
+    },
+    "summary_model": {
+      "type": "string",
+      "title": "Summarizer model (parallel mode only)",
+      "description": "Model for Task subagents in parallel-mode theme summarization. Allowed values: 'haiku' (default, cheapest — fine for one-sentence cluster summaries), 'sonnet' (richer prose), 'opus' (highest quality), 'inherit' (match the host Claude Code session's model). PARALLEL-ONLY: this setting does NOT affect serial-mode summarization, which always uses the host session's model.",
+      "default": "haiku"
     }
   }
 }

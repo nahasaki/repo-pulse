@@ -148,13 +148,45 @@ For each cluster in any order:
 Truncate raw diff reading to ~30 lines per file block — enough for
 intent, not for line-by-line analysis.
 
+Serial mode always uses the **host session's model** — whatever the
+user picked for this Claude Code session. `summary_model` (see
+§Parallel mode → Model selection) does NOT apply here because serial
+reads happen inline in the running session and cannot be downgraded
+mid-session.
+
 ### Parallel mode
+
+#### Model selection
+
+Read `CLAUDE_PLUGIN_OPTION_SUMMARY_MODEL` (default `haiku`). Validate
+against the set `{haiku, sonnet, opus, inherit}`. On an unrecognized
+value, fall back to `inherit` AND emit a `> note: unknown
+summary_model value '<value>'; falling back to host session model`
+line — prepend it above the themes section, or above the remaining
+output if no themes section is produced.
+
+The validated value determines the `model` argument passed to each
+`Task` call in this run:
+
+| Validated value | `Task` `model` argument |
+|-----------------|--------------------------|
+| `haiku` | `"haiku"` |
+| `sonnet` | `"sonnet"` |
+| `opus` | `"opus"` |
+| `inherit` | *omit the field* — subagents follow the host session |
+
+The same validated value applies to every subagent in the run — no
+per-cluster override.
+
+#### Dispatch
 
 For each batch of up to `PARALLEL_CONCURRENCY` clusters:
 
 Dispatch Task subagents in a single message with this shape:
 
 - **subagent_type**: `general-purpose`
+- **model**: per the Model selection table above. Omit this field
+  entirely when `summary_model` resolves to `inherit`.
 - **description**: e.g., `Summarize 8 telemetry commits`
 - **prompt** (fixed template, replace fields):
 

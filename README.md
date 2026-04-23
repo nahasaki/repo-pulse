@@ -88,6 +88,7 @@ they persist in `~/.claude/settings.json` across `/plugin update`.
 | `default_since` | Fallback window when your last commit can't be found | `7 days ago` |
 | `summary_mode` | Themes section mode: `auto` (threshold-based), `off` (skip themes), `always` (force parallel subagents) | `auto` |
 | `summary_max_commits` | Hard safety cap — skip themes when more than this many commits remain after filtering | `50` |
+| `summary_model` | Model for parallel-mode themes subagents: `haiku`, `sonnet`, `opus`, or `inherit` (match session). Parallel-only — serial mode always uses your session's model | `haiku` |
 
 Re-run the plugin's config flow in Claude Code to change values later.
 
