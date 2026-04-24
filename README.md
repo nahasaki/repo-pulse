@@ -2,26 +2,50 @@
 
 > A Claude Code plugin that catches you up on a git repository since you were last active.
 
-Ask *"what's new?"* in any repo and get a focused brief: what your teammates
-merged, which branches moved, which PRs are waiting on you, and whether CI is
-green — in one read-only command.
+Ask *"what's new?"* in any repo and get a **short prose brief** — what
+the team shipped, what's in flight (with a heads-up if someone's
+already working on your thing), what needs your review, and what you
+did. PR and branch references are clickable. One read-only command.
+
+## Example
+
+```
+# What's new in cli
+Window: 2026-04-21 → 2026-04-24 (--since=3 days ago)
+
+Over the past three days the team landed three big threads: William Martin
+shipped a telemetry stack ([telemetry command](...), error recording,
+host categorization — [#13253](...), [#13254](...), [#13255](...));
+Sam Morrow tightened skill discovery ([#13235](...), [#13236](...),
+[#13237](...)); and security hardening landed ([#13272](...) log injection
++ [#13258](...) yaml shell injection).
+
+In flight: Sam has [#13266](...) and [#13264](...) open continuing the
+skill-discovery thread. Babak opened [#13271](...) to sign APT repos and
+[#13261](...) to URL-escape path components. None of the open PRs overlap
+with your current branch.
+
+Nothing awaits your review. CI on `trunk` is green (last run 4h ago).
+```
 
 ## Features
 
-- **Themes this period** — on active repos, a short "what was actually
-  done" section above the commit list, clustered by author and area.
-  Threshold-based: cheap on quiet repos, bounded on busy ones via
-  parallel subagents
+- **Prose-first output** — 1–4 short paragraphs (Shipped, In flight,
+  Needs you, You) instead of scannable but dense bulleted sections
+- **Collision heads-up** — if a teammate's open PR or new branch
+  overlaps with your current work, it's flagged explicitly
+- **Clickable references** — PR numbers and branch names are rendered
+  as markdown links that open in your forge
 - **Auto-detects your forge** — GitHub (via `gh`) or GitLab (via `glab`),
   including GitHub Enterprise and self-hosted GitLab
 - **Smart time window** — defaults to your last commit in the current repo;
   falls back to a configurable period otherwise
-- **Surfaces what matters** — merged commits, new/updated branches, open PRs,
-  PRs awaiting your review, your own recent work, CI status
+- **Cheap by default** — parallel-mode diff summarization uses Haiku
+  unless you change `summary_model`
 - **Zero-config for most users** — `git config user.email` identifies you
   automatically
 - **Graceful degradation** — on unknown forges (Gitea, Codeberg, …) only the
-  git-based sections run, with install hints for recognized hosts
+  git-based data is available, with install hints for recognized hosts
 - **Read-only** — fetches refs, nothing else
 
 ## Install

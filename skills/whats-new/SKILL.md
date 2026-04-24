@@ -1,58 +1,47 @@
 ---
 name: whats-new
-description: Summarize what changed in the current git repository since the user was last active. Shows merged commits on the default branch, new or updated remote branches, open and merged MRs on GitLab, the user's own recent commits, MRs awaiting review, and CI status on the default branch. Use when the user asks "what's new", "catch me up", "what did the team do", or returns to a repo after an absence.
+description: Summarize what changed in the current git repository since the user was last active. Produces a short prose narrative — what shipped, what's in flight (with collision heads-up if others are working near your WIP), what needs your attention, and what you did — with clickable PR and branch links. Use when the user asks "what's new", "catch me up", "what did the team do", or returns to a repo after an absence.
 argument-hint: [--since=<period>]
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/skills/whats-new/scripts/whats-new.sh:*), Bash(git:*), Bash(glab:*), Bash(gh:*), Task
 ---
 
 # whats-new
 
-Summarize activity in the current git repository, then add a short
-TL;DR and — on active repositories — a "## Themes this period" section
-derived from commit diffs before emitting the script's markdown.
+Run the summary script, then compose 1–4 prose paragraphs that describe
+what happened in the repo and what needs the user's attention. The
+script's structured markdown is **internal scratch** — never shown to
+the user.
 
 ## Steps
 
-1. Run the summary script. Pass through any `--since=<period>` argument the
-   user provided; if they did not, run it with no arguments so the smart
-   default resolves the window from the user's most recent commit (committer
-   date) in this repo.
+1. Run the summary script. Pass through any `--since=<period>` argument
+   the user provided; if they did not, run it with no arguments so the
+   smart default resolves the window from the user's most recent commit
+   (committer date) in this repo.
 
    ```
    ${CLAUDE_PLUGIN_ROOT}/skills/whats-new/scripts/whats-new.sh [--since=<period>]
    ```
 
-2. Build the themes section and the TL;DR, then emit the composed markdown
-   to the user. See [§Themes pipeline](#themes-pipeline) below for the full
-   filter → cluster → threshold → summarize flow. The final output order is:
-
-   1. TL;DR (1–3 bullets, always)
-   2. `## Themes this period` (3–6 bullets, when the threshold engine produced any)
-   3. The script's markdown, unchanged, minus the trailing `<!-- themes-metadata -->` block
-
-   The TL;DR surfaces whatever is most actionable:
-   - Remote branches whose names look similar to the user's current WIP —
-     they may have already pushed this work from another machine or a
-     colleague is duplicating it.
-   - Stale open MRs in "MRs awaiting my review" (high age).
-   - Failing CI on the default branch.
-   - Lines beginning with `> note:` — surface those; they explain
-     degraded modes (offline, unknown-forge origin, missing CLI, missing
-     identity, cap-exceeded themes, degraded themes, etc.).
-
-   If nothing stands out, skip the TL;DR and let the sections speak for
-   themselves.
+2. Run the narrative pipeline defined in [§Narrative pipeline](#narrative-pipeline)
+   below. Emit only the composed prose (plus the header) to the user.
 
 3. Answer follow-up questions conversationally. `Bash(git:*)`,
-   `Bash(glab:*)`, and `Bash(gh:*)` are in `allowed-tools` for this step —
-   use them directly for things like "show me the diff for that branch",
-   "what's in MR !1234" (GitLab), or "what's in PR #456" (GitHub) rather
-   than re-running the summary script.
+   `Bash(glab:*)`, and `Bash(gh:*)` are in `allowed-tools` for this
+   step — use them directly for things like "show me the diff for
+   that branch", "what's in MR !1234" (GitLab), or "what's in PR
+   #456" (GitHub) rather than re-running the summary script.
 
-## Themes pipeline
+## Narrative pipeline
 
-This pipeline runs during step 2. It is entirely in-session — no LLM
-calls from the bash script, `claude -p` is not used.
+Zero LLM calls from the bash script. All composition happens in the
+host Claude Code session.
+
+### Empty-window short-circuit
+
+If the script's output is the single line `Nothing new since <ISO>`,
+emit that line verbatim and stop. Do not compose paragraphs, do not
+emit the header.
 
 ### Constants
 
@@ -60,198 +49,302 @@ calls from the bash script, `claude -p` is not used.
 SERIAL_N_CAP          = 10    # max eligible commits for serial-mode reads
 SERIAL_DIFF_KB_CAP    = 50    # max approximate diff KB for serial-mode reads
 PARALLEL_CONCURRENCY  = 8     # max concurrent Task subagents in parallel mode
-OUTPUT_BULLET_CAP     = 6     # max themes bullets in the final section
 DEGRADED_FAILURE_PCT  = 25    # emit degraded note when this fraction of
                               # subagents failed in parallel mode
 ```
 
-Defaults — tune only with a follow-up OpenSpec change, not ad-hoc.
+Retune only via a new OpenSpec change.
 
-### Inputs
+### Pipeline stages
 
-- **`themes-metadata` block** from the end of the script's output. CSV
-  rows: `sha,author_name,added,deleted,files`. One row per §1 commit.
-- **`CLAUDE_PLUGIN_OPTION_SUMMARY_MODE`** — `auto` (default) | `off` |
-  `always`. Unknown values treated as `auto` with a `> note:`.
-- **`CLAUDE_PLUGIN_OPTION_SUMMARY_MAX_COMMITS`** — integer, default 50.
+```
+script output (raw markdown + <!-- themes-metadata --> block)
+    ↓
+[A] Fact extraction — parse §1/§2/§3/§4/§5/§6 into fact buckets
+    ↓
+[B] URL base derivation — git remote get-url origin → host/owner/repo
+    ↓
+[C] Diff reads for Shipped paragraph — reuse 0.4.0 threshold engine
+    (skip / serial / parallel) for §1 commits and §3 merged PRs
+    ↓
+[D] Collision detection — compare MY_BRANCHES vs THEIRS_BRANCHES
+    ↓
+[E] Paragraph composition — Shipped / In flight / Needs you / You
+    ↓
+[F] Link rendering — wrap PR, branch, commit refs in markdown links
+    ↓
+Output: header + paragraphs
+```
 
-If the metadata block is missing (older script version or §1 empty),
-fall back to `git log --shortstat` with the same `--since` the script
-used. If §1 is empty in the visible output, skip the pipeline — there
-is nothing to theme.
+### [A] Fact extraction
 
-### Filtering (before clustering)
+Parse the script's markdown output section-by-section into these
+fact buckets. Headings are authoritative — if a section is missing,
+its bucket is empty.
 
-Exclude these commits from themes analysis. They STAY in the §1
-commit list — filtering only removes them from cluster-and-summarize
-input.
+| Bucket | Source heading(s) | Per-entry fields |
+|--------|-------------------|------------------|
+| `shipped_commits` | `## Merged to \`<branch>\` (N)` | date, sha, subject, author |
+| `shipped_prs` | `### Merged this period (N)` under `## Merge requests` | number/iid, title, author, source_branch, target_branch, status |
+| `branches_new` | `## New / updated branches (N)` | branch, last_push_date, author, commits_ahead |
+| `prs_open_others` | `### Open — others (N)` under `## Merge requests` | number/iid, title, author, source_branch, target_branch, status |
+| `prs_open_mine` | `### Open — mine (N)` under `## Merge requests` | number/iid, title, author, source_branch, target_branch, status |
+| `my_activity` | `## My activity (N commits across M branches)` | branch, commits[] (date, time, sha, subject) |
+| `reviews_awaiting_me` | `## MRs awaiting my review (N)` OR `## PRs awaiting my review (N)` | number/iid, title, author, age_days |
+| `ci_default` | `## CI on \`<branch>\`` | workflow_name (GitHub only), id, status, datetime, url |
+| `themes_metadata` | HTML comment `<!-- themes-metadata … -->` | sha, author_name, added, deleted, files |
+| `notes` | Lines starting with `> note:` anywhere in the output | raw text |
 
-| Criterion | Rule |
-|-----------|------|
-| Bot authors | `author_name` ends with `[bot]` (e.g., `dependabot[bot]`, `renovate[bot]`, `github-actions[bot]`) |
-| Lock/vendor-only | Every file in the commit matches `*.lock`, `go.sum`, `package-lock.json`, `yarn.lock`, `Cargo.lock`, `vendor/**`, or `node_modules/**` |
-| Trivial dep bumps | Subject matches `^chore(\(deps\))?: bump ` AND shortstat additions ≤ 5 |
-| Pure merge commits | `git cat-file -p <sha>` shows ≥ 2 parents AND `git diff --name-only <parent1>..<parent2>` is empty |
-| Docs-only | Every file matches `*.md`, `docs/**`, `README*`, or `LICENSE*` |
+After extraction, strip the `<!-- themes-metadata -->` block so it
+does not appear in the user-facing output.
 
-Decide lock/vendor-only and docs-only by running `git show --stat
---name-only --format='' <sha>` on candidate commits (the metadata
-block gives sha + counts but not paths). Be conservative: if *any*
-file in the commit sits outside the exclusion patterns, do NOT filter
-the commit.
+### [B] URL base derivation
 
-### Signals
+```
+origin = $(git remote get-url origin)
 
-After filtering, compute:
+# Normalize SSH and HTTPS:
+#   git@github.com:cli/cli.git      → github.com, cli, cli
+#   https://github.com/cli/cli.git  → github.com, cli, cli
+#   https://gitlab.com/owner/repo.git → gitlab.com, owner, repo
 
-- `N` = count of eligible commits.
-- `DIFF_KB` = Σ(added lines from metadata) / 20. (Rough proxy — 20
-  lines ≈ 1 KB of patch content.)
+host, owner, repo = parse(origin)  # strip .git suffix
+```
 
-### Dispatch
+Detect the forge from `host`: `github.com` or `ghe.*` → GitHub;
+`gitlab.com` or any host where `glab auth status --hostname <host>`
+reports "Logged in" → GitLab; else unknown.
 
-| Mode | Condition | Behavior |
-|------|-----------|----------|
-| `skip` | `N == 0`, OR `N > summary_max_commits`, OR `summary_mode == "off"` | No themes section. If skipped due to cap, prepend a note: `> note: too many commits this period (<N>); themes skipped. Narrow the window with --since.` |
-| `serial` | `summary_mode == "auto"` AND `N ≤ SERIAL_N_CAP` AND `DIFF_KB ≤ SERIAL_DIFF_KB_CAP` | Read `git show <sha>` for each cluster's commits in the host session. Main session context includes raw diffs. |
-| `parallel` | `summary_mode == "always"`, OR `auto` when `serial` conditions are not met | Dispatch one Task subagent per cluster, up to `PARALLEL_CONCURRENCY` concurrent. Subsequent clusters run in additional batches of 8. Main session sees only one-sentence summaries. |
+On unknown forge, skip link wrapping — emit plain text (`#N`,
+`` `branch` ``).
 
-### Clustering
+### [C] Diff reads for the Shipped paragraph
 
-Key per commit: `(author, conventional-commit-type, top-level-path)`.
+Reuse the 0.4.0 threshold engine:
 
-- **author** — `author_name` from the metadata block.
-- **conventional-commit-type** — prefix before `(` or `:` in the
-  commit subject. Recognized: `feat`, `fix`, `refactor`, `chore`,
-  `docs`, `test`, `perf`, `ci`, `build`, `style`. Anything else
-  collapses to `other`.
-- **top-level-path** — shallowest common ancestor directory of all
-  files touched by the commit. Run `git show --name-only --format=''
-  <sha>` to list files. If the commit touches unrelated top-levels
-  (e.g., `pkg/foo/*` and `cmd/bar/*`), use the synthetic token
-  `<mixed>`.
+1. Compute `N` = eligible `shipped_commits` after filtering
+   (bots, lock/vendor-only, trivial dep bumps, pure merge commits,
+   docs-only).
+2. Compute `DIFF_KB` = Σ(added lines from themes_metadata) / 20.
+3. Honor `summary_mode`:
+   - `off` → skip diff reads; Shipped paragraph composed from
+     subjects and titles only (degraded mode).
+   - `always` → force parallel.
+   - `auto` (default) → serial if `N ≤ SERIAL_N_CAP` AND `DIFF_KB ≤
+     SERIAL_DIFF_KB_CAP`, else parallel; skip entirely if `N == 0`
+     OR `N > summary_max_commits`.
+4. Cluster eligible commits by `(author, conventional-commit-type,
+   top-level-path)`. Single-commit clusters are fine.
 
-Merge single-commit clusters only when the commit subject is already
-informative (a conventional commit with a clear message). Otherwise
-summarize even single-commit clusters through the chosen mode.
+**Serial mode:** for each cluster, `git show <sha>` each commit in
+the host session; produce a one-or-two-sentence clause describing
+what the cluster accomplished.
 
-### Serial mode
+**Parallel mode:** dispatch one `Task` subagent per cluster, up to
+`PARALLEL_CONCURRENCY` concurrent. Subagent prompt (replace fields):
 
-For each cluster in any order:
+```
+You are summarizing a cluster of related git commits for a whats-new
+report. Focus on what the commits collectively accomplished, not how.
 
-1. `git show <sha>` for each commit in the cluster. Keep in the
-   current session's working memory.
-2. Produce one sentence: "what these commits collectively
-   accomplish". No preamble, no list, no emoji.
-3. Record the bullet as `(cluster-metadata, sentence)`.
+Cluster metadata:
+- author: <author>
+- conventional-commit-type: <type>
+- top-level path: <path-root>
+- commits: <sha1>, <sha2>, ...
 
-Truncate raw diff reading to ~30 lines per file block — enough for
-intent, not for line-by-line analysis.
+For each commit above, run `git show <sha>` and read the change.
+Do not read more than 30 lines of any single file block; truncate
+large file blocks. Skip past generated/lock files in your reading
+order.
 
-Serial mode always uses the **host session's model** — whatever the
-user picked for this Claude Code session. `summary_model` (see
-§Parallel mode → Model selection) does NOT apply here because serial
-reads happen inline in the running session and cannot be downgraded
-mid-session.
+Reply with exactly one or two sentences of prose, suitable as a
+clause inside a longer paragraph. No preamble. No markdown
+formatting. No bullets. No emoji. Focus on the concrete change, not
+generic context.
+```
 
-### Parallel mode
-
-#### Model selection
-
-Read `CLAUDE_PLUGIN_OPTION_SUMMARY_MODEL` (default `haiku`). Validate
-against the set `{haiku, sonnet, opus, inherit}`. On an unrecognized
-value, fall back to `inherit` AND emit a `> note: unknown
-summary_model value '<value>'; falling back to host session model`
-line — prepend it above the themes section, or above the remaining
-output if no themes section is produced.
-
-The validated value determines the `model` argument passed to each
-`Task` call in this run:
-
-| Validated value | `Task` `model` argument |
-|-----------------|--------------------------|
-| `haiku` | `"haiku"` |
-| `sonnet` | `"sonnet"` |
-| `opus` | `"opus"` |
-| `inherit` | *omit the field* — subagents follow the host session |
-
-The same validated value applies to every subagent in the run — no
-per-cluster override.
-
-#### Dispatch
-
-For each batch of up to `PARALLEL_CONCURRENCY` clusters:
-
-Dispatch Task subagents in a single message with this shape:
-
+Subagent configuration:
 - **subagent_type**: `general-purpose`
-- **model**: per the Model selection table above. Omit this field
-  entirely when `summary_model` resolves to `inherit`.
-- **description**: e.g., `Summarize 8 telemetry commits`
-- **prompt** (fixed template, replace fields):
+- **allowed tools**: `Bash(git:*)` only
+- **model**: taken from `summary_model` (`haiku`, `sonnet`, `opus`).
+  When `summary_model` is `inherit`, omit the `model` field so the
+  subagent follows the host session.
 
-  ```
-  You are summarizing a cluster of related git commits for a whats-new
-  report. Focus on what the commits collectively accomplish, not how.
+Collect clauses. If ≥ `DEGRADED_FAILURE_PCT`% of subagents failed,
+prepend a `> note: themes partially degraded: <k> of <n> clusters
+failed to summarize` line above the narrative output (below the
+header).
 
-  Cluster metadata:
-  - author: <author>
-  - conventional-commit-type: <type>
-  - top-level path: <path-root>
-  - commits: <sha1>, <sha2>, ...
+Failed clusters contribute to the Shipped paragraph at title-level
+only, never as invented content.
 
-  For each commit above, run `git show <sha>` and read the change.
-  Do not read more than 30 lines of any single file block; truncate
-  large file blocks. Skip past generated/lock files in your reading
-  order.
+#### Input filtering
 
-  Reply with exactly one sentence. No preamble, no markdown
-  formatting, no bullets, no emoji. Include the main feature or fix
-  the cluster delivers.
-  ```
+Skip commits matching ANY of these before clustering:
 
-Allowed tools for the subagent: `Bash(git:*)` only. Do not grant
-`Bash(gh:*)`, `Bash(glab:*)`, `Read`, or `Write`.
+- **Bot authors**: `author_name` ends with `[bot]` (case-sensitive).
+- **Lock/vendor-only**: every file in the commit matches `*.lock`,
+  `go.sum`, `package-lock.json`, `yarn.lock`, `Cargo.lock`,
+  `vendor/**`, or `node_modules/**`. Determine file list via `git
+  show --name-only --format='' <sha>`.
+- **Trivial dep bumps**: subject matches `^chore(\(deps\))?: bump `
+  AND shortstat additions ≤ 5.
+- **Pure merge commits**: ≥ 2 parents AND empty cross-parent diff.
+- **Docs-only**: every file matches `*.md`, `docs/**`, `README*`,
+  or `LICENSE*`.
 
-Collect returns; if a subagent errors or times out, drop that cluster
-silently. Track the failure rate across all clusters in this run.
+Filtered commits are not dropped from `shipped_commits` — they
+still contribute to the Shipped paragraph at subject-level, they
+are just excluded from cluster-and-summarize analysis.
 
-### Graceful degradation
+### [D] Collision detection
 
-After parallel dispatch:
-
-- If ≥ `DEGRADED_FAILURE_PCT`% of clusters failed (e.g., 2+ of 8), emit
-  a `> note: themes partially degraded: <k> of <n> clusters failed to
-  summarize` line just above the themes section.
-- If every cluster failed, skip the themes section entirely and emit
-  the note on its own line.
-
-### Rendering the themes section
-
-Assemble bullets from successful summaries:
+Build the two sets before composing the In flight paragraph.
 
 ```
-## Themes this period
-- **<theme title>** (<N> commits, <author1>[ + <author2> + others]): <one sentence>
+MY_BRANCHES = set(
+    my_activity[*].branch                                  # §4
+  ∪ output of `git branch --list --format='%(refname:short)'`
+  ∪ current HEAD branch
+)
+
+THEIRS_BRANCHES = set(
+    prs_open_others[*].source_branch                        # §3 Open — others
+  ∪ branches_new[*].branch                                  # §2
+)
 ```
 
-Rules:
+Normalize both sets by lowercasing. Then for each `(mine, theirs)`
+pair check:
 
-- 3–6 bullets max. If more clusters summarized, keep top-6 by commit
-  count, drop the tail silently.
-- Bold theme title from the summarizer; the parenthetical
-  `(N commits, ...)` is mechanical from cluster metadata.
-- Author list truncates to `author1 + author2 + others` when three or
-  more distinct authors share a cluster.
-- Exactly one sentence per bullet. No sub-bullets. No emoji.
-- Strip the `<!-- themes-metadata -->` block from the final output
-  sent to the user — it is an implementation detail.
+1. **Name overlap**: `theirs` contains ≥ 3 consecutive characters
+   of `mine` (or vice versa), AND the shared substring is not a
+   common word in the exclusion set `{main, master, develop, dev,
+   trunk, fix, feat, feature, chore, docs, test, wip}`.
+2. **Path overlap**: the user's most recent commit on `mine` (via
+   `git log -1 --name-only --format='' <mine>`) touches a
+   top-level path `P`, AND an open PR whose source branch is
+   `theirs` has `P` as a prefix of any file in its changed-files
+   list, AND both the user's commit subject and the PR title start
+   with the same conventional-commit type (`feat:`/`fix:`/etc.).
 
-### When the themes section is empty
+Matches go into the In flight paragraph as a heads-up phrase:
 
-If dispatch returned no bullets (skip mode, or all clusters failed),
-do NOT emit `## Themes this period` at all. The rest of the script
-output still renders normally.
+> Heads-up: <author>'s open <PR-link> touches the same
+> `<path-root>` area as your branch <branch-link>.
+
+If no collisions trigger, the In flight paragraph describes others'
+work in neutral prose without a heads-up phrase.
+
+### [E] Paragraph composition
+
+Role order is fixed: **Shipped → In flight → Needs you → You**.
+Paragraphs with no source data are omitted entirely.
+
+#### Shipped paragraph
+
+Stitches subagent clauses (or degraded-mode titles) into flowing
+prose. Mentions:
+
+- Main themes of merged work — typically 2–4 threads.
+- Authors who drove them.
+- Concrete PR or commit references for the user to follow up.
+
+Shape guidance (not rigid):
+
+> Over the past <window>, the team landed <thread 1> (<author>;
+> <PR/commit refs>), <thread 2> (<author>; refs), and <thread 3>.
+> [Optional: one sentence on a standout commit or security fix.]
+
+Never write counts like "22 commits" — the user said numbers don't
+matter. Focus on what happened.
+
+#### In flight paragraph
+
+Describes open PRs and new branches. Always includes the collision
+heads-up phrase if collisions triggered in stage [D].
+
+Shape guidance:
+
+> In flight: <author1> has <PR-link> continuing <theme>;
+> <author2> opened <branch-link> working on <theme>.
+> Heads-up: <author3>'s open <PR-link> touches the same
+> `<path>` area as your branch <branch-link>.
+
+If there are many open PRs (10+), pick the 3–5 most notable (by
+recency, by touch-area, by collision status) and summarize the rest
+as "and a handful of dependency bumps / docs updates / …".
+
+#### Needs you paragraph
+
+Combines:
+
+- `reviews_awaiting_me` → PRs you need to review (especially stale
+  ones — age > 3 days).
+- `ci_default` with status `failure` or `startup_failure`.
+- `prs_open_mine` with failing checks.
+
+Shape guidance:
+
+> Two PRs await your review: <PR-link> (<author>, <age> days,
+> stale) and <PR-link> (<author>, <age> days). CI on
+> `<default-branch>` is red — the latest <workflow-name> run
+> failed at <datetime>.
+
+If none of the three inputs has content, omit this paragraph.
+
+#### You paragraph
+
+Describes the user's own recent activity from `my_activity`. Keep
+it short — the user knows what they did; this is context, not
+news.
+
+Shape guidance:
+
+> You pushed <N-ish, described in prose> commits yourself on
+> <branch-link>: <brief description of the arc — new feature,
+> cleanup, version bump, etc.>.
+
+When `my_activity` covers multiple branches, mention each briefly.
+
+### [F] Link rendering
+
+Wrap references in markdown links using the URL base from [B]:
+
+| Reference | GitHub template | GitLab template |
+|-----------|------------------|------------------|
+| PR/MR | `[#<N>](https://<host>/<owner>/<repo>/pull/<N>)` | `[!<iid>](https://<host>/<owner>/<repo>/-/merge_requests/<iid>)` |
+| Branch | `` [`<branch>`](https://<host>/<owner>/<repo>/tree/<branch>) `` | `` [`<branch>`](https://<host>/<owner>/<repo>/-/tree/<branch>) `` |
+| Commit | `` [`<sha>`](https://<host>/<owner>/<repo>/commit/<sha>) `` | `` [`<sha>`](https://<host>/<owner>/<repo>/-/commit/<sha>) `` |
+
+On unknown forge, emit plain text instead: `#<N>`, `` `<branch>` ``,
+`` `<sha>` ``. No empty link wrappers, no fallback URLs.
+
+Claude Code's terminal renderer handles markdown links natively —
+no OSC 8 escape sequences are emitted.
+
+### Final output
+
+```
+# What's new in <repo-slug>
+
+Window: <ISO start> → <ISO end> (<reason>)
+
+<optional > note: lines from the script or the pipeline>
+
+<Shipped paragraph, if present>
+
+<In flight paragraph, if present>
+
+<Needs you paragraph, if present>
+
+<You paragraph, if present>
+```
+
+Paragraphs are separated by a blank line. Omit the `<!-- themes-metadata -->`
+block and any `##`-level headings from the script's scratch output
+— the user never sees them.
 
 ## Notes
 
@@ -272,8 +365,12 @@ output still renders normally.
   `~/.claude/settings.json` directly under
   `pluginConfigs."repo-pulse".options`).
 - On unknown-forge origins (Gitea, Codeberg, etc.) the script produces
-  only sections 1, 2, and 4 — this is by design, not a bug. Themes
-  still work because they rely on §1 only.
-- `summary_mode: off` is the escape hatch for any user who sees the
-  themes section as noise or who wants to preserve pre-0.4.0 token
-  usage.
+  only sections 1, 2, and 4 — this is by design, not a bug. The
+  narrative still renders (In flight paragraph may be shorter).
+- `summary_mode: off` is the escape hatch for users who want to save
+  tokens: Shipped paragraph degrades to commit-subject prose, other
+  paragraphs render normally.
+- Users who want the old six-section structured output can run the
+  script directly: `${CLAUDE_PLUGIN_ROOT}/skills/whats-new/scripts/whats-new.sh`.
+  The structured view is still produced — it's just the skill's
+  internal scratch, not the user-visible output.

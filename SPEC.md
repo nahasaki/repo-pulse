@@ -204,7 +204,12 @@ Latest CI run on `origin/<default>`. Adaptive label:
 
 ## Output Format
 
-Plain markdown to stdout. Structure:
+The user-visible output is **prose**. The skill composes 1–4 prose
+paragraphs from the script's internal scratch output (which is still
+the six-section markdown described below under §Script internal
+output). Paragraphs with no source data are omitted.
+
+Shape:
 
 ```markdown
 # What's new in <repo-slug>
@@ -215,72 +220,166 @@ Window: <ISO start> → <ISO end> (<reason>)
 #   "--since=<value>"                        — explicit flag from the user
 #   "DEFAULT_SINCE fallback (<value>)"       — no user commits found
 
-## Themes this period            # inserted by SKILL.md step 2, not the script
-- **<theme title>** (<N> commits, <author1> + <author2>): <one sentence>
-- ... (3–6 bullets max)
+<Shipped paragraph — what the team merged>
+
+<In flight paragraph — active PRs and branches, with collision heads-up if applicable>
+
+<Needs you paragraph — reviews awaiting you, failing CI>
+
+<You paragraph — your own recent activity>
+```
+
+Paragraph roles:
+
+| Role | Source in script output | Include when |
+|------|--------------------------|--------------|
+| Shipped | §1 Merged + §3 Merged-this-period | Any merged work in-window |
+| In flight | §2 New branches + §3 Open — others + collision flags | Any open PRs or new branches |
+| Needs you | §5 Awaiting my review + §6 CI failures | Any review-due or CI-red items |
+| You | §4 My activity | User has commits in-window |
+
+Role order is fixed. Empty paragraphs are omitted without a divider.
+No numeric totals appear in prose (no "22 commits", no "5 branches").
+PR and branch references are rendered as markdown links per
+§Link rendering.
+
+When every source section is empty, the skill passes the script's
+`Nothing new since <ISO>` single line through without rendering a
+header or paragraphs.
+
+### Shipped paragraph composition
+
+The Shipped paragraph is composed from:
+
+- §1 commits → grouped into clusters by (author, conventional-
+  commit-type, top-level-path) — see §Themes filtering.
+- §3 merged-this-period PRs → surfaced in the same cluster framework
+  when their commits overlap §1 (forge-dependent).
+- Subagent-derived one-or-two-sentence clauses stitched into
+  flowing prose by the host session.
+
+Under `summary_mode: off`, no diff reads happen; the paragraph
+degrades to subject/title-level prose. The paragraph still renders.
+
+### In flight paragraph composition
+
+Summarizes §2 and §3 "Open — others" entries. When collisions fire
+(see §Collision detection), the paragraph includes a **heads-up**
+phrase explicitly calling out the collision. When there are many
+open PRs (10+), the paragraph highlights 3–5 most notable and
+summarizes the rest (e.g., "and a handful of dependency bumps").
+
+### Needs you paragraph composition
+
+Combines §5 (reviews awaiting) with §6 failures and any `prs_open_mine`
+entries with red checks. If none of those have content, the
+paragraph is omitted.
+
+### You paragraph composition
+
+Brief, informational — the user knows what they did. Describes the
+arc of their §4 activity (e.g., "You shipped the v0.4.0 themes
+release and fixed the marketplace schema.").
+
+### Collision detection
+
+Before composing the In flight paragraph, the skill builds two sets:
+
+```
+MY_BRANCHES    = §4 my_activity branches
+               ∪ `git branch --list` output
+               ∪ current HEAD branch
+
+THEIRS_BRANCHES = §3 Open — others source branches
+               ∪ §2 new/updated remote branches
+```
+
+For each `(mine, theirs)` pair, flag a collision when either:
+
+1. **Name overlap**: `theirs` shares ≥ 3 consecutive characters with
+   `mine` after lowercasing, and the shared substring is not in
+   `{main, master, develop, dev, trunk, fix, feat, feature, chore,
+   docs, test, wip}`.
+2. **Path overlap + conventional-commit match**: the user's most
+   recent commit on `mine` touches top-level path `P`, an open PR
+   with source `theirs` has `P` as a file prefix, AND both the
+   user's commit subject and the PR title share the same
+   conventional-commit type (`feat:` / `fix:` / etc.).
+
+When triggered, the In flight paragraph emits a heads-up phrase,
+e.g., *"Heads-up: Sam's open [#13266] touches the same skill-install
+area as your branch `fix-skill-install`."*
+
+The heuristic is conservative — false positives acceptable, false
+negatives are the failure mode. Users are the judge.
+
+### Link rendering
+
+References inside the prose are rendered as GitHub-Flavored Markdown
+links clickable in Claude Code's terminal renderer. No OSC 8 escape
+sequences are emitted.
+
+URL construction reads `git remote get-url origin`, handles HTTPS
+and SSH, strips the `.git` suffix, and derives `<host>/<owner>/<repo>`.
+
+| Reference | GitHub | GitLab |
+|-----------|--------|--------|
+| PR / MR | `[#<N>](https://<host>/<owner>/<repo>/pull/<N>)` | `[!<iid>](https://<host>/<owner>/<repo>/-/merge_requests/<iid>)` |
+| Branch | `` [`<branch>`](https://<host>/<owner>/<repo>/tree/<branch>) `` | `` [`<branch>`](https://<host>/<owner>/<repo>/-/tree/<branch>) `` |
+| Commit | `` [`<sha>`](https://<host>/<owner>/<repo>/commit/<sha>) `` | `` [`<sha>`](https://<host>/<owner>/<repo>/-/commit/<sha>) `` |
+
+On unknown forge, emit plain text instead: `#<N>`, `` `<branch>` ``,
+`` `<sha>` ``. Info stays; only the link wrapper is omitted.
+
+## Script internal output
+
+The shell script continues to emit structured markdown (the six
+sections described below) plus a `<!-- themes-metadata -->` HTML
+comment. This is **the skill's internal scratch**, not the user-
+visible output. The skill parses it and composes prose.
+
+Users who want the old structured view can run the script directly:
+`${CLAUDE_PLUGIN_ROOT}/skills/whats-new/scripts/whats-new.sh`. The
+output contract for that direct invocation is:
+
+```markdown
+# What's new in <repo-slug>
+Window: <ISO start> → <ISO end> (<reason>)
 
 ## Merged to `<default>` (N)
 - YYYY-MM-DD `sha` **message** — Author Name
-- ...
 
 ## New / updated branches (N)
 - `branch-name` — last push YYYY-MM-DD by Author (M commits ahead of <default>)
-- ...
 
 ## Merge requests
 ### Open — others (N)
-- !1234 **title** — Author, source → target, CI: ✅
-- ...
-
+- !1234 **title** — Author, source → target, CI: <status>
 ### Merged this period (N)
-- ...
-
 ### Open — mine (N)
-- ...
 
-## My activity (N commits)
-- ...
+## My activity (N commits across M branches)
+- **<branch>**
+  - YYYY-MM-DD HH:MM `sha` **subject**
 
 ## MRs awaiting my review (N)
-- ...
+- !1234 **title** — Author, age: N days
 
 ## CI on `<default>`
 - #<pipeline-id> <status> — YYYY-MM-DD HH:MM (<url>)
+
+<!-- themes-metadata
+sha,author_name,added,deleted,files
+...
+-->
 ```
-
-Section order is fixed. The plugin does not produce JSON.
-
-After the last script-emitted section, the script appends a
-machine-readable `<!-- themes-metadata -->` HTML comment (invisible in
-rendered markdown) with one CSV row per §1 commit:
-`sha,author_name,added,deleted,files`. SKILL.md step 2 parses this
-block to build the `## Themes this period` section. The block is
-emitted only when §1 has commits and is stripped from the user-visible
-output. The skill MAY fall back to running `git log --shortstat`
-itself if the block is missing (older script version).
-
-### Themes section
-
-Above §1 the skill MAY insert a `## Themes this period` section when
-the threshold engine decides themes should be produced. Bullet
-format:
-
-```
-- **<theme title>** (<N> commits, <author1> + <author2> + others): <one sentence>
-```
-
-Rules:
-
-- 3–6 bullets max. Clusters beyond 6 are silently dropped (their
-  commits still appear in §1).
-- Exactly one sentence per bullet; no sub-bullets; no emoji.
-- Author list truncates to `author1 + author2 + others` when three
-  or more distinct authors share a cluster.
 
 ### Themes filtering
 
-Before themes analysis, commits are filtered out (they stay in §1's
-commit list; only excluded from cluster input):
+Before inclusion in the Shipped paragraph's cluster input, commits
+are filtered out (they still contribute to the Shipped paragraph at
+subject-level — filtering only excludes them from
+cluster-and-summarize):
 
 - Bot authors — author name ends with `[bot]`.
 - Lock/vendor-only changes — every file matches `*.lock` / `go.sum` /
@@ -299,20 +398,21 @@ outside every exclusion pattern, the commit is NOT filtered.
 
 | Mode | Condition | Behavior |
 |------|-----------|----------|
-| `skip` | `N == 0`, OR `N > summary_max_commits`, OR `summary_mode == "off"` | No themes section. Emit `> note:` when skipped due to cap. |
-| `serial` | `summary_mode == "auto"` AND `N ≤ 10` AND `DIFF_KB ≤ 50` | Skill reads diffs in the host session. |
+| `skip` | `N == 0`, OR `N > summary_max_commits` | Shipped paragraph composes from subjects only; no diff reads. Emit `> note:` when skipped due to cap. |
+| `degraded` | `summary_mode == "off"` | Same as `skip` plus no cap note — Shipped paragraph degrades but renders. |
+| `serial` | `summary_mode == "auto"` AND `N ≤ 10` AND `DIFF_KB ≤ 50` | Skill reads diffs in the host session to generate subagent-equivalent clauses. |
 | `parallel` | `summary_mode == "always"`, OR `auto` when `serial` doesn't qualify | Spawn subagents via `Task` tool, ≤ 8 concurrent, one per cluster. |
 
 `N` = eligible commits after filtering. `DIFF_KB` ≈ Σ(added lines) ÷
 20. Constants (`10`, `50`, `8`) live as named thresholds near the top
-of SKILL.md and are the starting defaults — retune only via a new
+of SKILL.md and are starting defaults — retune only via a new
 OpenSpec change.
 
 If ≥ 25% of parallel subagents fail, the skill prepends a
 `> note: themes partially degraded: <k> of <n> clusters failed to
-summarize` line above the themes section.
+summarize` line above the narrative output (below the header).
 
-### Themes model selection (parallel mode only)
+### Summarizer model selection (parallel mode only)
 
 The `summary_model` userConfig value (default `haiku`) determines the
 model for parallel-mode subagents. The skill passes the value to the
@@ -335,12 +435,21 @@ forces the parallel code path regardless of commit volume.
         ▼
 SKILL.md tells Claude:
   1. Run bash: ${CLAUDE_PLUGIN_ROOT}/skills/whats-new/scripts/whats-new.sh [--since=X]
-  2. Parse the <!-- themes-metadata --> block and build the
-     ## Themes this period section via the filter → cluster →
-     threshold → summarize pipeline (serial reads or parallel Task
-     subagents). Also compose the 1–3 bullet TL;DR. Emit the composed
-     markdown (TL;DR, themes, script output) with the metadata block
-     stripped.
+  2. Narrative pipeline:
+       A. Fact-extraction — parse §1–§6 + <!-- themes-metadata -->
+          from the script's markdown into per-role fact buckets.
+       B. URL base derivation — git remote get-url origin → host/owner/repo.
+       C. Diff reads for Shipped paragraph — threshold engine picks
+          serial (host-session reads) or parallel (Task subagents,
+          model controlled by summary_model). Degraded under summary_mode: off.
+       D. Collision detection — build MY_BRANCHES vs THEIRS_BRANCHES;
+          apply name-overlap and path-overlap rules; flag matches.
+       E. Paragraph composition — Shipped → In flight → Needs you → You;
+          empty paragraphs omitted.
+       F. Link rendering — wrap PR/branch/commit refs in markdown links
+          (plain text on unknown forge).
+       Emit header + composed prose; strip the metadata block and any
+       §-headings from the script's scratch output.
   3. Answer follow-ups conversationally
         │
         ▼
