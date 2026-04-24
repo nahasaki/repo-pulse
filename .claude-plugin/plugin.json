@@ -1,6 +1,6 @@
 {
   "name": "repo-pulse",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Summarize git activity in the current repository since you were last active.",
   "author": { "name": "Myroslav Tantsyura" },
   "userConfig": {
